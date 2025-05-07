@@ -8,7 +8,7 @@ let int_alu_insns opcode funct7 funct3 immi rdval =
   let open Signal in let open Pipeline in
 
   (* Pipeline for all int ALU instructions, with subpipelines for immediate and register versions *)
-  let p = new pipeline (fun _ _ -> vdd) in (* TODO: don't need guard because we'll use subpipelines for all writes. Should have a way to specify this? *)
+  let p = new pipeline (fun p s -> let opcode = p#take opcode s in opcode ==: of_bit_string "0110011" ||: opcode ==: of_bit_string "0010011") in
   let pr = new pipeline (fun p s -> p#take opcode s ==: (of_bit_string "0110011"))
   and pi = new pipeline (fun p s -> p#take opcode s ==: (of_bit_string "0010011")) in
 
@@ -99,28 +99,25 @@ let cpu ~clock ~reset ~imem_size =
 
   (* Decode: extract immediate, opcode, func bits, register designators *)
   let insnd = p#take insn sD in
-  (* TODO: get rid of "wire" variants of registers and use `take` (should forward directly since same pipeline stage) *)
-  let rs_wires = [|insnd.:[19,15]; insnd.:[24,20]|] in
-  let rs1 = p#put_pipe rs_wires.(0) sD and rs2 = p#put_pipe rs_wires.(1) sD in
-  let rd_wire = insnd.:[11,7] in
-  let rd = p#put_pipe rd_wire sD in
+  let opcode = insnd.:[6,0] in
+  let rs = [|insnd.:[19,15]; insnd.:[24,20]|] in
+  let rd = insnd.:[11,7] in
   let funct3 = p#put_pipe insnd.:[14,12] sD and funct7 = p#put_pipe insnd.:[31,25] sD in
-  let immi = p#put_pipe (sresize insnd.:[31,20] 32) sD and imms = p#put_pipe (sresize (insnd.:[31,25] @: insnd.:[11,7]) 32) sD
-  and immb = p#put_pipe (sresize (insnd.:(31) @: insnd.:(7) @: insnd.:[30,25] @: insnd.:[11,8] @: gnd) 32) sD
-  and immu = p#put_pipe (sresize (insnd.:[31,12] @: zero 12) 32) sD
-  and immj = p#put_pipe (sresize (insnd.:(31) @: insnd.:[19,12] @: insnd.:(20) @: insnd.:[30,21] @: gnd) 32) sD in
-  let opcode = p#put_pipe insnd.:[6,0] sD in
+  let immi = sresize insnd.:[31,20] 32 and imms = sresize (insnd.:[31,25] @: insnd.:[11,7]) 32
+  and immb = sresize (insnd.:(31) @: insnd.:(7) @: insnd.:[30,25] @: insnd.:[11,8] @: gnd) 32
+  and immu = sresize (insnd.:[31,12] @: zero 12) 32
+  and immj = sresize (insnd.:(31) @: insnd.:[19,12] @: insnd.:(20) @: insnd.:[30,21] @: gnd) 32 in
 
   (* Register file *)
   let rdval = wire 32 in
   let rdval_id = Id.new_id () in
-  let _ = p#inject rdval sW (Read (rdval_id, 32)) in (* TODO: how will this backwards path work. Should be good I think? *)
-  let reg_we = wire 1 in (* TODO: something more sophisticated with `WriteReg` maybe? *)
+  let _ = p#inject rdval sW (Read (rdval_id, 32)) in (* TODO: how will this backwards path work? Should be good I think? *)
+  let reg_we = wire 1 in (* TODO: implement this; something with `WriteReg` maybe? *)
   let write_port =  { Write_port.write_clock = clock
-                    ; write_address = rd_wire
+                    ; write_address = rd
                     ; write_data = rdval
                     ; write_enable = reg_we } in
-  let read_ports = Array.map rs_wires ~f:(fun rs ->
+  let read_ports = Array.map rs ~f:(fun rs ->
       { Read_port.read_clock = clock
       ; read_address = rs
       ; read_enable = vdd }
@@ -131,12 +128,32 @@ let cpu ~clock ~reset ~imem_size =
         ~write_ports:[|write_port|]
         ~read_ports
         () in
-  let rsval_wires = Array.map2_exn rs_wires regfile ~f:(fun rs rsv ->
+  let rsvals = Array.map2_exn rs regfile ~f:(fun rs rsv ->
     mux2 (rs ==:. 0) (of_int ~width:32 0) rsv
   ) in
-  (* TODO: how to make register values available? *)
-  (* let rs1val = put_global rsval_wires.(0) sD and rs2val = put_global rsval_wires.(1) sD in *)
 
+  (* Place relevant values into pipeline. In particular, need to lookup type of instruction for 2nd input (rs2 or imm of various types) *)
+  let rs1 = p#put_pipe rs.(0) sD and rs2 = p#put_pipe rs.(1) sD and rd = p#put_pipe rd sD in
+  let src1 = p#put_pipe rsvals.(0) sD
+  and src2 =
+    let src_ops = [
+      rsvals.(1), [of_bit_string "0110011"];
+      immi, [of_bit_string "0010011"; of_bit_string "0000011"; of_bit_string "1110011"; of_bit_string "1100111"];
+      imms, [of_bit_string "0100011"];
+      immb, [of_bit_string "1100011"];
+      immj, [of_bit_string "1101111"];
+      immu, [of_bit_string "0110111"];
+    ] in
+    let src = List.map ~f:(fun (src, opcodes) ->
+      {
+        With_valid.value = src;
+        valid = opcodes |> List.map ~f:(fun o -> opcode ==: o) |> tree ~arity:2 ~f:(function [a; b] -> a ||: b | _ -> failwith "invalid tree")
+      }
+    ) src_ops |> priority_select in
+    p#put_pipe src.valid sD
+  in
+
+  (* ALU  *)
   let alu_pipeline = int_alu_insns opcode funct7 funct3 immi rdval_id
 
 
