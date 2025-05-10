@@ -2,26 +2,49 @@
 open Base
 open Hardcaml
 
+type stage = F | D | X | M | W
+let stage_index = function F -> 0 | D -> 1 | X -> 2 | M -> 3 | W -> 4
+let index_stage = function 0 -> F | 1 -> D | 2 -> X | 3 -> M | 4 -> W | _ -> failwith "invalid stage"
 
-(* Implements integer ALU instructions. Takes in hooks for opcode, funct7, funct3, and result to write to rd. *)
-let int_alu_insns opcode funct7 funct3 immi rdval =
-  let open Signal in let open Pipeline in
+type pipe_signal = stage -> Signal.t
 
-  (* Pipeline for all int ALU instructions, with subpipelines for immediate and register versions *)
-  let p = new pipeline (fun p s -> let opcode = p#take opcode s in opcode ==: of_bit_string "0110011" ||: opcode ==: of_bit_string "0010011") in
-  let pr = new pipeline (fun p s -> p#take opcode s ==: (of_bit_string "0110011"))
-  and pi = new pipeline (fun p s -> p#take opcode s ==: (of_bit_string "0010011")) in
+(* Forwards a signal through pipeline registers. Parameters:
+- The signal to forward through the pipeline
+- The stage in which this signal is generated
+- For each stage, a 1-bit signal indicating that stage stalls, keeping its previous signal instead of the one from the previous stage
+- For each stage, a 1-bit signal indicating it bubbles, taking on a given default value instead of the one from the previous stage
+- The default value to take on a bubble or on a reset (defaults to 0)
+Note that bubbles and stalls do not propagate backwards automatically. The most common case is stage N bubbling and all stages <N stalling, but
+this must be implemented in the bubble and stall signals.
+If a stage is marked as both bubbling and stalling, it will stall (allows setting bubble N = stall N-1 as default).
+Produces a `pipe_signal`, i.e. a function mapping a stage to a signal from these registers.
+*)
+let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero (Signal.width signal)) ~regspec =
+  (* Signal in stage N is just input if N was inject stage, otherwise add register with value N-1 as input.
+  Easily implemented with simple recursion: *)
+  let rec get_signal si =
+    if si < (stage_index stage) then failwith "Tried to extract signal from pipeline before it was added"
+    else if si = (stage_index stage) then signal
+    else let prev = get_memo (si-1) in Signal.(
+      reg regspec ~enable:(~: (stall (index_stage si))) (mux2 (bubble (index_stage si)) default prev)
+    )
 
-  (* ALU inputs *)
-  let alu_in_1 = p#take (ReadReg Rs1) sX in
-  (* Pull ALU in 2 from common ALU pipeline, writing from guarded imm and reg pipelines *)
-  let alu_in_2 = wire 32 in
-  let alu_in_2_hook = p#pull_pipe alu_in_2 sX in
-  let _ = pr#inject (pr#take (ReadReg Rs2) sX) sX alu_in_2_hook
-  and _ = pi#inject (pi#take immi sX) sX alu_in_2_hook in
+  (* Just using `get_signal` would rebuild pipeline on each access. Memoization avoids (while lazying building only needed latches) *)
+  and cache = Array.create ~len:5 None
+  and get_memo si =
+    match cache.(si) with
+    | Some w -> w
+    | None -> cache.(si) <- Some (get_signal si); get_memo si
+
+  in (fun s -> get_memo (stage_index s))
+
+
+(* Implements integer ALU instructions. Takes in values for opcode, sources, funct7, and funct3. *)
+let alu opcode alu_in_1 alu_in_2 funct7 funct3 =
+  let open Signal in
 
   (* Adder *)
-  let add_in_2 = mux2 (p#take funct7 sX ==: of_string "7'h20" ||: p#take funct3 sX ==: of_string "2'h2" ||: p#take funct3 sX ==: of_string "2'h3")
+  let add_in_2 = mux2 (funct7 ==: of_string "7'h20" ||: funct3 ==: of_string "2'h2" ||: funct3 ==: of_string "2'h3")
     (negate alu_in_2) alu_in_2 in
   let rel_add = alu_in_1 +: add_in_2 in
 
@@ -35,7 +58,7 @@ let int_alu_insns opcode funct7 funct3 immi rdval =
 
   (* Choice of right shift depends on funct7 for reg and imm[11,5] for imm; could use pipeline to decide,
   but since it's all in the same stage it's simpler to just use a mux *)
-  let sra_over_srl = mux2 ((p#take opcode sX).:(5)) ((p#take funct7 sX) ==: of_string "7'h20") (alu_in_2.:[11,5] ==: of_string "7'h20") in
+  let sra_over_srl = mux2 (opcode.:(5)) (funct7 ==: of_string "7'h20") (alu_in_2.:[11,5] ==: of_string "7'h20") in
 
   (* Set less than based on signs (avoids overflow in adder) *)
   let rel_slt_sltu = mux (alu_in_1.:(31) @: alu_in_2.:(31)) [
@@ -50,7 +73,7 @@ let int_alu_insns opcode funct7 funct3 immi rdval =
   ] in
 
   (* Compute result with funct3 *)
-  let result = mux (p#take funct3 sX) [
+  mux funct3 [
     rel_add;                      (* 0: add/sub *)
     rel_sll;                      (* 1: sll *)
     uresize rel_slt_sltu.:(1) 32; (* 2: slt *)
@@ -60,30 +83,31 @@ let int_alu_insns opcode funct7 funct3 immi rdval =
       rel_sra rel_srl;
     rel_or;                       (* 6: or *)
     rel_and;                      (* 7: and *)
-  ] in
-
-  (* Write back to $rd and note that value can be bypassed from M (or later; TODO make this +1 automatic?) *)
-  p#inject result sX (Write rdval);
-  (* TODO: this is a bit janky (giving value written by rdval as our bypass result; feels like it should be our own value somehow);
-  may want to rework this anyway, especially if Rd is done with constructor (why not just have `WriteReg` no args at that point?).
-  Probably want to specify register IDs with wires for simplicity of implementation? Although I think they'll always be the same pipeline slots anyway? *)
-  p#inject (p#take (Read (rdval, 32)) sM) sM (WriteReg Rd);
-
-  (* Integrate sub-pipelines *)
-  p#integrate [pr; pi];
-
-  (* Return the final pipeline *)
-  p
+  ]
 
 
 let cpu ~clock ~reset ~imem_size =
-  let open Signal in let open Pipeline in
+  let open Signal in
 
-  let p = new pipeline (fun _ _ -> vdd) in
+  (* Pipeline stuff *)
+  (* Pipeline regs are falling edge *)
+  let regspec = Reg_spec.create ~clock ~reset () |> Reg_spec.override ~clock_edge:(Edge.Falling) in
+  (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
+  let stall_decode = wire 1 in
+  let stall = function
+    | F | D -> stall_decode
+    | X | M | W -> gnd in
+  (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
+  let branch_execute = wire 1 in
+  let bubble s =
+    let withoutstall = function D | X -> branch_execute | _ -> gnd in
+    withoutstall s ||: stall (index_stage (stage_index s - 1))
+  in
+  let forward_pipeline ~signal ~stage ?default = forward_pipeline ~signal ~stage ~stall ~bubble ?default ~regspec in
 
   (* Make fetch stage *)
   let next_pc = wire 32 in
-  let pc_reg = reg (Reg_spec.create ~clock ~reset ()) ~enable:vdd next_pc in
+  let pc_reg = reg regspec ~enable:vdd next_pc in
   let read_port = { Read_port.read_clock = clock
                   ; read_address = pc_reg
                   ; read_enable = vdd } in
@@ -93,30 +117,27 @@ let cpu ~clock ~reset ~imem_size =
         ~write_ports:[||]
         ~read_ports:[|read_port|]
         () in
-  let insn = p#put_pipe imem.(0) sF in
+  let insn = forward_pipeline ~signal:imem.(0) ~stage:F ~default:(of_hex ~width:32 "00000013") in
   (* Next PC calculation (TODO branch) *)
   let _ = next_pc <== next_pc +:. 1 in
 
-  (* Decode: extract immediate, opcode, func bits, register designators *)
-  let insnd = p#take insn sD in
-  let opcode = insnd.:[6,0] in
+  (* Decode: extract immediate and/or register designators (only used in decode; inserted separately into pipeline based on opcode post-decode) *)
+  let insnd = insn D in
+  let opcode s = (insn s).:[6,0] in
   let rs = [|insnd.:[19,15]; insnd.:[24,20]|] in
   let rd = insnd.:[11,7] in
-  let funct3 = p#put_pipe insnd.:[14,12] sD and funct7 = p#put_pipe insnd.:[31,25] sD in
   let immi = sresize insnd.:[31,20] 32 and imms = sresize (insnd.:[31,25] @: insnd.:[11,7]) 32
   and immb = sresize (insnd.:(31) @: insnd.:(7) @: insnd.:[30,25] @: insnd.:[11,8] @: gnd) 32
   and immu = sresize (insnd.:[31,12] @: zero 12) 32
   and immj = sresize (insnd.:(31) @: insnd.:[19,12] @: insnd.:(20) @: insnd.:[30,21] @: gnd) 32 in
 
   (* Register file *)
-  let rdval = wire 32 in
-  let rdval_id = Id.new_id () in
-  let _ = p#inject rdval sW (Read (rdval_id, 32)) in (* TODO: how will this backwards path work? Should be good I think? *)
-  let reg_we = wire 1 in (* TODO: implement this; something with `WriteReg` maybe? *)
+  let reg_write_val = wire 32 in
+  let reg_write_en = wire 1 in (* TODO: implement this; something with `WriteReg` maybe? *)
   let write_port =  { Write_port.write_clock = clock
                     ; write_address = rd
-                    ; write_data = rdval
-                    ; write_enable = reg_we } in
+                    ; write_data = reg_write_val
+                    ; write_enable = reg_write_en } in
   let read_ports = Array.map rs ~f:(fun rs ->
       { Read_port.read_clock = clock
       ; read_address = rs
@@ -133,8 +154,11 @@ let cpu ~clock ~reset ~imem_size =
   ) in
 
   (* Place relevant values into pipeline. In particular, need to lookup type of instruction for 2nd input (rs2 or imm of various types) *)
-  let rs1 = p#put_pipe rs.(0) sD and rs2 = p#put_pipe rs.(1) sD and rd = p#put_pipe rd sD in
-  let src1 = p#put_pipe rsvals.(0) sD
+  (* TODO: only set regs that are actually written by insn *)
+  let rs1 = forward_pipeline ~signal:rs.(0) ~stage:D
+  and rs2 = forward_pipeline ~signal:(mux2 (opcode D) rs.(1) (zero 3)) ~stage:D
+  and rd = forward_pipeline ~signal:rd ~stage:D in
+  let src1 = forward_pipeline ~signal:rsvals.(0) ~stage:D
   and src2 =
     let src_ops = [
       rsvals.(1), [of_bit_string "0110011"];
@@ -147,16 +171,35 @@ let cpu ~clock ~reset ~imem_size =
     let src = List.map ~f:(fun (src, opcodes) ->
       {
         With_valid.value = src;
-        valid = opcodes |> List.map ~f:(fun o -> opcode ==: o) |> tree ~arity:2 ~f:(function [a; b] -> a ||: b | _ -> failwith "invalid tree")
+        (* Source should be chosen if opcode matches one of its  *)
+        valid = opcodes |> List.map ~f:(fun o -> (opcode D) ==: o) |> tree ~arity:2 ~f:(function [a; b] -> a ||: b | _ -> failwith "invalid tree")
       }
     ) src_ops |> priority_select in
-    p#put_pipe src.valid sD
-  in
+    forward_pipeline ~signal:src.value ~stage:D in
+  (* opcode, func bits come directly from instruction (TODO: injective separately would save some reg bits because rest of instruction unused?) *)
+  let opcode s = (insn s).:[6,0] in
+  let funct3 s = (insn s).:[14,12] and funct7 s = (insn s).:[31,25] in
 
-  (* ALU  *)
-  let alu_pipeline = int_alu_insns opcode funct7 funct3 immi rdval_id
+  (* Execute stage *)
+  (* Sources with bypassing *)
+  let src1x = wire 32 and src2x = wire 32 in
+  (* ALU *)
+  let alu_result = alu (opcode X) src1x src2x (funct7 X) (funct3 X) in
+  let writeval_d = forward_pipeline ~signal:alu_result ~stage:X in
+
+  (* Memory stage *)
+  let writeval_m = forward_pipeline ~signal:(writeval_d M) ~stage:M in
 
 
-  in
+  (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)?) *)
+  let _ = src1x <== mux2 (rs1 X ==: rd M) (writeval_d M) (
+                    mux2 (rs1 X ==: rd W) (writeval_m W) (
+                    src1 X)) in
+  let _ = src2x <== mux2 (rs2 X ==: rd M) (writeval_d M) (
+                    mux2 (rs2 X ==: rd W) (writeval_m W) (
+                    src2 X)) in
+
+
+
 
   ()
