@@ -39,29 +39,39 @@ let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero
   in (fun s -> get_memo (stage_index s))
 
 
-(* Implements integer ALU instructions. Takes in values for opcode, sources, funct7, and funct3. *)
-let alu opcode alu_in_1 alu_in_2 funct7 funct3 =
+(* Integer ALU. Takes in two inputs and an optype, which is funct3 with additional bit differentiating srl from sra and add from sub.
+Specifically:
+- 000 0 = add
+- 000 1 = sub
+- 001 x = sll
+- 010 x = slt
+- 011 x = sltu
+- 100 x = xor
+- 101 0 = sra
+- 101 1 = srl
+- 110 x = or
+- 111 x = and
+Could expand to other operations by requiring some x's to be 0s (wouldn't affect existing instructions).
+*)
+let alu src1 src2 optype =
   let open Signal in
 
-  (* Adder *)
-  let add_in_2 = mux2 (funct7 ==: of_string "7'h20" ||: funct3 ==: of_string "2'h2" ||: funct3 ==: of_string "2'h3")
-    (negate alu_in_2) alu_in_2 in
-  let rel_add = alu_in_1 +: add_in_2 in
+  let op3 = optype.:[3,1] and op1 = optype.:(0) in
+
+  (* Adder; subtractor if sub (via op1) or slt(u) *)
+  let add_in_2 = mux2 (op1 ||: op3 ==: of_string "2'h2" ||: op3 ==: of_string "2'h3") (negate src1) src2 in
+  let rel_add = src1 +: add_in_2 in
 
   (* Logic functions *)
-  let rel_and = alu_in_1 &: alu_in_2
-  and rel_or = alu_in_1 |: alu_in_2
-  and rel_xor = alu_in_1 ^: alu_in_2
-  and rel_sll = log_shift sll alu_in_1 alu_in_2.:[4,0]
-  and rel_srl = log_shift srl alu_in_1 alu_in_2.:[4,0]
-  and rel_sra = log_shift sra alu_in_1 alu_in_2.:[4,0] in
-
-  (* Choice of right shift depends on funct7 for reg and imm[11,5] for imm; could use pipeline to decide,
-  but since it's all in the same stage it's simpler to just use a mux *)
-  let sra_over_srl = mux2 (opcode.:(5)) (funct7 ==: of_string "7'h20") (alu_in_2.:[11,5] ==: of_string "7'h20") in
+  let rel_and = src1 &: src2
+  and rel_or = src1 |: src2
+  and rel_xor = src1 ^: src2
+  and rel_sll = log_shift sll src2 src2.:[4,0]
+  and rel_srl = log_shift srl src1 src2.:[4,0]
+  and rel_sra = log_shift sra src1 src2.:[4,0] in
 
   (* Set less than based on signs (avoids overflow in adder) *)
-  let rel_slt_sltu = mux (alu_in_1.:(31) @: alu_in_2.:(31)) [
+  let rel_slt_sltu = mux (src1.:(31) @: src2.:(31)) [
     (* Both positive: just check sign bit for both, no overflow possible *)
     rel_add.:(31) @: rel_add.:(31) ;
     (* First positive, second negative: greater if signed and less if unsigned *)
@@ -73,14 +83,13 @@ let alu opcode alu_in_1 alu_in_2 funct7 funct3 =
   ] in
 
   (* Compute result with funct3 *)
-  mux funct3 [
+  mux op3 [
     rel_add;                      (* 0: add/sub *)
     rel_sll;                      (* 1: sll *)
     uresize rel_slt_sltu.:(1) 32; (* 2: slt *)
     uresize rel_slt_sltu.:(0) 32; (* 3: sltu *)
     rel_xor;                      (* 4: xor *)
-    mux2 sra_over_srl             (* 5: sr *)
-      rel_sra rel_srl;
+    mux2 op1 rel_sra rel_srl;     (* 5: sra/srl *)
     rel_or;                       (* 6: or *)
     rel_and;                      (* 7: and *)
   ]
@@ -183,8 +192,29 @@ let cpu ~clock ~reset ~imem_size =
   (* Execute stage *)
   (* Sources with bypassing *)
   let src1x = wire 32 and src2x = wire 32 in
+  (* ALU optype selection based on opcode (TODO: lift to previous stage) *)
+  let optype = onehot_select [
+    (* R-type: funct3 with add/sub and sra/srl determined by funct7 being 0x20 *)
+    { valid = (opcode X) ==: Riscv.opIntR;
+      value = (funct3 X) @: (funct7 X ==: of_string "7'h20") };
+    (* I-type: funct3 with sra/srl determined by upper bits of imm (but never sub, so must check funct3) *)
+    { valid = (opcode X) ==: Riscv.opIntI;
+      value = (funct3 X) ==: of_string "3'b101" &&: (src2 X).:[11,5] ==: of_string "7'h20" };
+    (* Loads/stores: add offset *)
+    { valid = (opcode X) ==: Riscv.opLoad ||: (opcode X) ==: Riscv.opStore;
+      value = of_bit_string "0000" };
+    (* Branch eq/ne: subtract to check zero bit *)
+    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "000" ||: funct3 X ==: of_bit_string "001");
+      value = of_bit_string "0001" };
+    (* Branch lt/ge: slt *)
+    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "100" ||: funct3 X ==: of_bit_string "101");
+      value = of_bit_string "0100" };
+    (* Branch lt/ge unsigned: sltu *)
+    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "110" ||: funct3 X ==: of_bit_string "111");
+      value = of_bit_string "0110" };
+  ] in
   (* ALU *)
-  let alu_result = alu (opcode X) src1x src2x (funct7 X) (funct3 X) in
+  let alu_result = alu src1x src2x optype in
   let writeval_d = forward_pipeline ~signal:alu_result ~stage:X in
 
   (* Memory stage *)
