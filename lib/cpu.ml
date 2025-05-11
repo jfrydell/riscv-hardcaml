@@ -126,9 +126,11 @@ let cpu ~clock ~reset ~imem_size =
         ~write_ports:[||]
         ~read_ports:[|read_port|]
         () in
+  let pc = forward_pipeline ~signal:pc_reg ~stage:F in
   let insn = forward_pipeline ~signal:imem.(0) ~stage:F ~default:(of_hex ~width:32 "00000013") in
-  (* Next PC calculation (TODO branch) *)
-  let _ = next_pc <== next_pc +:. 1 in
+  (* Next PC calculation. increment by 1 unless we are branching *)
+  let branch_pc = wire 32 in
+  next_pc <== mux2 branch_execute branch_pc (next_pc +:. 1);
 
   (* Decode: extract immediate and/or register designators (only used in decode; inserted separately into pipeline based on opcode post-decode) *)
   let insnd = insn D in
@@ -141,12 +143,11 @@ let cpu ~clock ~reset ~imem_size =
   and immj = sresize (insnd.:(31) @: insnd.:[19,12] @: insnd.:(20) @: insnd.:[30,21] @: gnd) 32 in
 
   (* Register file *)
-  let reg_write_val = wire 32 in
-  let reg_write_en = wire 1 in (* TODO: implement this; something with `WriteReg` maybe? *)
+  let reg_write = {With_valid.value = wire 32; valid = wire 1} in
   let write_port =  { Write_port.write_clock = clock
                     ; write_address = rd
-                    ; write_data = reg_write_val
-                    ; write_enable = reg_write_en } in
+                    ; write_data = reg_write.value
+                    ; write_enable = reg_write.valid } in
   let read_ports = Array.map rs ~f:(fun rs ->
       { Read_port.read_clock = clock
       ; read_address = rs
@@ -170,10 +171,9 @@ let cpu ~clock ~reset ~imem_size =
   let src1 = forward_pipeline ~signal:rsvals.(0) ~stage:D
   and src2 =
     let src_ops = [
-      rsvals.(1), [of_bit_string "0110011"];
+      rsvals.(1), [of_bit_string "0110011"; of_bit_string "1100011"]; (* For B-type (branch), ALU takes reg and immb is used elsewhere *)
       immi, [of_bit_string "0010011"; of_bit_string "0000011"; of_bit_string "1110011"; of_bit_string "1100111"];
       imms, [of_bit_string "0100011"];
-      immb, [of_bit_string "1100011"];
       immj, [of_bit_string "1101111"];
       immu, [of_bit_string "0110111"];
     ] in
@@ -185,49 +185,65 @@ let cpu ~clock ~reset ~imem_size =
       }
     ) src_ops |> priority_select in
     forward_pipeline ~signal:src.value ~stage:D in
-  (* opcode, func bits come directly from instruction (TODO: injective separately would save some reg bits because rest of instruction unused?) *)
+  (* opcode, func bits come directly from instruction (TODO: injecting separately would save some reg bits because rest of instruction unused?) *)
   let opcode s = (insn s).:[6,0] in
   let funct3 s = (insn s).:[14,12] and funct7 s = (insn s).:[31,25] in
 
   (* Execute stage *)
   (* Sources with bypassing *)
   let src1x = wire 32 and src2x = wire 32 in
-  (* ALU optype selection based on opcode (TODO: lift to previous stage) *)
+  (* ALU optype selection based on opcode (TODO: lift to previous stage for timing probably) *)
   let optype = onehot_select [
     (* R-type: funct3 with add/sub and sra/srl determined by funct7 being 0x20 *)
     { valid = (opcode X) ==: Riscv.opIntR;
       value = (funct3 X) @: (funct7 X ==: of_string "7'h20") };
     (* I-type: funct3 with sra/srl determined by upper bits of imm (but never sub, so must check funct3) *)
     { valid = (opcode X) ==: Riscv.opIntI;
-      value = (funct3 X) ==: of_string "3'b101" &&: (src2 X).:[11,5] ==: of_string "7'h20" };
+      value = (funct3 X) ==: of_string "3'b101" &: (src2 X).:[11,5] ==: of_string "7'h20" };
     (* Loads/stores: add offset *)
-    { valid = (opcode X) ==: Riscv.opLoad ||: (opcode X) ==: Riscv.opStore;
+    { valid = (opcode X) ==: Riscv.opLoad |: (opcode X) ==: Riscv.opStore;
       value = of_bit_string "0000" };
     (* Branch eq/ne: subtract to check zero bit *)
-    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "000" ||: funct3 X ==: of_bit_string "001");
+    { valid = (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.beq ||: funct3 X ==: Riscv.Funct3.bne);
       value = of_bit_string "0001" };
     (* Branch lt/ge: slt *)
-    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "100" ||: funct3 X ==: of_bit_string "101");
+    { valid = (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.blt ||: funct3 X ==: Riscv.Funct3.bge);
       value = of_bit_string "0100" };
     (* Branch lt/ge unsigned: sltu *)
-    { valid = (opcode X) ==: Riscv.opBranch &&: (funct3 X ==: of_bit_string "110" ||: funct3 X ==: of_bit_string "111");
+    { valid = (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.bltu ||: funct3 X ==: Riscv.Funct3.bgeu);
       value = of_bit_string "0110" };
   ] in
   (* ALU *)
   let alu_result = alu src1x src2x optype in
   let writeval_d = forward_pipeline ~signal:alu_result ~stage:X in
 
+  (* Branches *)
+  (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)
+  branch_execute <== tree ~arity:2 ~f:(function [a; b] -> a |: b | _ -> failwith "invalid tree") [
+    (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.beq) &: (~: (gnd ||: alu_result));
+    (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.bne) &: (gnd ||: alu_result);
+    (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.blt ||: funct3 X ==: Riscv.Funct3.bltu) &: alu_result.:(0);
+    (opcode X) ==: Riscv.opBranch &: (funct3 X ==: Riscv.Funct3.bge ||: funct3 X ==: Riscv.Funct3.bgeu) &: ~: alu_result.:(0);
+    (opcode X) ==: Riscv.opJal;
+    (opcode X) ==: Riscv.opJalr;
+  ];
+  (* Address to branch to is PC+imm for branches and jal, src1+imm for jalr. But imm actually isn't `src2`
+  for B-type branches as they use rs2 for comparison. So grab that from the pipeline where necessary. *)
+  let branch_imm = mux2 (opcode X ==: Riscv.opBranch) (forward_pipeline ~signal:immb ~stage:D X) (src2 X) in
+  branch_pc <== (mux2 (opcode X ==: Riscv.opJalr) src1x (pc X)) +: branch_imm;
+
+
   (* Memory stage *)
   let writeval_m = forward_pipeline ~signal:(writeval_d M) ~stage:M in
 
 
   (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)?) *)
-  let _ = src1x <== mux2 (rs1 X ==: rd M) (writeval_d M) (
-                    mux2 (rs1 X ==: rd W) (writeval_m W) (
-                    src1 X)) in
-  let _ = src2x <== mux2 (rs2 X ==: rd M) (writeval_d M) (
-                    mux2 (rs2 X ==: rd W) (writeval_m W) (
-                    src2 X)) in
+  src1x <== mux2 (rs1 X ==: rd M) (writeval_d M) (
+            mux2 (rs1 X ==: rd W) (writeval_m W) (
+            src1 X));
+  src2x <== mux2 (rs2 X ==: rd M) (writeval_d M) (
+            mux2 (rs2 X ==: rd W) (writeval_m W) (
+            src2 X));
 
 
 
