@@ -1,16 +1,18 @@
 open Hardcaml
 open Signal
 
-let opIntR = of_bit_string "0110011"
-let opIntI = of_bit_string "0010011"
-let opLoad = of_bit_string "0000011"
-let opStore = of_bit_string "0100011"
-let opBranch = of_bit_string "1100011"
-let opJal = of_bit_string "1101111"
-let opJalr = of_bit_string "1100111"
-let opLui = of_bit_string "0110111"
-let opLuiPc = of_bit_string "0010111"
-let opEnv = of_bit_string "1110011"
+module Op = struct
+  let intR = of_bit_string "0110011"
+  let intI = of_bit_string "0010011"
+  let load = of_bit_string "0000011"
+  let store = of_bit_string "0100011"
+  let branch = of_bit_string "1100011"
+  let jal = of_bit_string "1101111"
+  let jalr = of_bit_string "1100111"
+  let lui = of_bit_string "0110111"
+  let luiPc = of_bit_string "0010111"
+  let env = of_bit_string "1110011"
+end
 
 module Funct3 = struct
 
