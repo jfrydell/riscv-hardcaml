@@ -95,7 +95,7 @@ let alu src1 src2 optype =
   ]
 
 
-let cpu ~clock ~reset ~insn_in =
+let cpu ~clock ~reset ~insn_in ~data_in =
   let open Signal in
 
   (* Pipeline stuff *)
@@ -134,11 +134,12 @@ let cpu ~clock ~reset ~insn_in =
   and immj = sresize (insnd.:(31) @: insnd.:[19,12] @: insnd.:(20) @: insnd.:[30,21] @: gnd) 32 in
 
   (* Register file *)
-  let reg_write = {With_valid.value = wire 32; valid = wire 1} in
+  let reg_write = wire 32 in
+  let reg_dest = wire 5 in
   let write_port =  { Write_port.write_clock = clock
-                    ; write_address = rd
-                    ; write_data = reg_write.value
-                    ; write_enable = reg_write.valid } in
+                    ; write_address = reg_dest
+                    ; write_data = reg_write
+                    ; write_enable = reg_dest <>: zero 5 } in
   let read_ports = Array.map rs ~f:(fun rs ->
       { Read_port.read_clock = clock
       ; read_address = rs
@@ -156,7 +157,7 @@ let cpu ~clock ~reset ~insn_in =
 
   (* Place relevant values into pipeline. In particular, need to lookup type of instruction for 2nd input (rs2 or imm of various types) *)
   (* TODO: only set regs that are actually written by insn.
-  TODO: same with inputs; those are trickier than anticipated because rs2 can be used in many places (likely don't want just one pipeline slot) *)
+  TODO: same with inputs; those are trickier than anticipated because rs2 can be used in many places (maybe don't want just one pipeline slot?) *)
   let rs1 = forward_pipeline ~signal:rs.(0) ~stage:D
   and rs2 = forward_pipeline ~signal:rs.(1) ~stage:D
   and rd = forward_pipeline ~signal:rd ~stage:D in
@@ -207,7 +208,7 @@ let cpu ~clock ~reset ~insn_in =
   ] in
   (* ALU *)
   let alu_result = alu src1x src2x optype in
-  let writeval_d = forward_pipeline ~signal:alu_result ~stage:X in
+  let writeval_x = forward_pipeline ~signal:alu_result ~stage:X in
 
   (* Branches *)
   (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)
@@ -225,27 +226,48 @@ let cpu ~clock ~reset ~insn_in =
   branch_pc <== (mux2 (opcode X ==: Riscv.opJalr) src1x (pc X)) +: branch_imm;
 
 
-  (* TODO: Memory stage *)
-  let writeval_m = forward_pipeline ~signal:(writeval_d M) ~stage:M in
+  (* Memory stage *)
+  (* Generate fields: type (00 = no access, 10 = load, 11 = store); size (00 = byte, 01 = half, 10 = word); addr; data *)
+  let load = (opcode M ==: Riscv.opLoad) in
+  let store = (opcode M ==: Riscv.opStore) in
+  let mem_access = (load |: store) @: store in
+  let mem_size = (funct3 M).:[1,0] in
+  let mem_addr = writeval_x M in
+  (* Grab mem data from rs2 for stores (imm used for ALU); need custom bypassing *)
+  let mem_data = wire 32 in
+
+  (* Get data in from memory (TODO: have valid interface with stalling) *)
+  let unsigned_extend = (funct3 M).:(2) in
+  let loaded_val = mux mem_size [
+    mux2 unsigned_extend (uresize data_in.:[7,0] 32) (sresize data_in.:[7,0] 32);
+    mux2 unsigned_extend (uresize data_in.:[15,0] 32) (sresize data_in.:[15,0] 32);
+    data_in
+  ] in
+  let writeval_m = forward_pipeline ~signal:(
+    mux2 load loaded_val (writeval_x M)
+  ) ~stage:M in
 
 
-  (* TODO: Writeback stage *)
-  reg_write.value <== (writeval_m W);
-  reg_write.valid <== vdd;
+  (* Writeback stage *)
+  reg_write <== (writeval_m W);
+  reg_dest <== (rd W);
 
 
   (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)? ultimately only two possible things to bypass;
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
-  src1x <== mux2 (rs1 X ==: rd M) (writeval_d M) (
+  src1x <== mux2 (rs1 X ==: rd M) (writeval_x M) (
             mux2 (rs1 X ==: rd W) (writeval_m W) (
             src1 X));
-  src2x <== mux2 (rs2 X ==: rd M) (writeval_d M) (
+  src2x <== mux2 (rs2 X ==: rd M) (writeval_x M) (
             mux2 (rs2 X ==: rd W) (writeval_m W) (
             src2 X));
+  mem_data <== mux2 (rs2 M ==: rd W) (writeval_m W) (
+                  forward_pipeline ~signal:rsvals.(1) ~stage:D W
+                );
 
 
   (* TODO: Stall logic *)
   stall_decode <== gnd;
 
 
-  pc_reg
+  pc_reg, mem_addr, mem_access, mem_size, mem_data
