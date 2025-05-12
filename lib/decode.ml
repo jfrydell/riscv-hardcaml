@@ -28,7 +28,7 @@ let decode insn = let open Signal in
     [Riscv.Op.store], imms;
     [Riscv.Op.branch], immb;
     [Riscv.Op.jal], immj;
-    [Riscv.Op.lui; Riscv.Op.luiPc], immu;
+    [Riscv.Op.lui; Riscv.Op.auiPc], immu;
   ] in
 
   (* Set which instructions read rs1, read rs2, and write to rd *)
@@ -36,7 +36,7 @@ let decode insn = let open Signal in
     [Riscv.Op.intR; Riscv.Op.load], of_bit_string "111";
     [Riscv.Op.intI; Riscv.Op.jalr], of_bit_string "101";
     [Riscv.Op.store; Riscv.Op.branch], of_bit_string "110";
-    [Riscv.Op.jal; Riscv.Op.lui; Riscv.Op.luiPc], of_bit_string "001";
+    [Riscv.Op.jal; Riscv.Op.lui; Riscv.Op.auiPc], of_bit_string "001";
     [Riscv.Op.env], of_bit_string "000";
   ] in
 

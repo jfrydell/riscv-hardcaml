@@ -44,6 +44,7 @@ let pipe_wires width =
   (fun s -> wires.(stage_index s))
 
 
+(* Main CPU pipeline *)
 let cpu ~clock ~reset ~insn_in ~data_in =
   let open Signal in
 
@@ -106,60 +107,67 @@ let cpu ~clock ~reset ~insn_in ~data_in =
   and imm = forward_pipeline ~signal:decoded.imm ~stage:D
   and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D
   and funct7 = forward_pipeline ~signal:decoded.funct7 ~stage:D in
-  (* For rs vals, put original array into pipeline and create wires for bypassing (`rsvals` = unbypassed version) *)
+  (* `rsvals` = unbypassed register values from register file *)
   let rsvals = Array.map ~f:(fun v -> forward_pipeline ~signal:v ~stage:D) rsvals in
-  let rs1val = pipe_wires 32 and rs2val = pipe_wires 32 in
+
+  (* Create wires for bypassed sources and written destination *)
+  let rs1val = pipe_wires 32 and rs2val = pipe_wires 32 and rdval = pipe_wires 32 in
 
   (* Execute stage *)
-  (* Sources (with bypassing) *)
-  let src1x = rs1val X in
-  let src2x = mux2 ((opcode X ==: Riscv.Op.intR) |: (opcode X ==: Riscv.Op.branch)) (rs2val X) (imm X) in
+  (* First operands is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
+  let src1x = mux2
+                ((opcode X ==: Riscv.Op.branch) |: (opcode X ==: Riscv.Op.jal) |: (opcode X ==: Riscv.Op.auiPc))
+                (pc X) (rs1val X) in
+  let src2x = mux2
+                ((opcode X ==: Riscv.Op.intR) |: (opcode X ==: Riscv.Op.branch))
+                (rs2val X) (imm X) in
   (* ALU optype selection based on opcode (TODO: lift to previous stage for timing probably) *)
-  let optype = onehot_select [
+  let optype = priority_select_with_default [
     (* R-type: funct3 with add/sub and sra/srl determined by funct7 being 0x20 *)
     { valid = (opcode X) ==: Riscv.Op.intR;
       value = (funct3 X) @: (funct7 X ==: of_string "7'h20") };
     (* I-type: funct3 with sra/srl determined by upper bits of imm (but never sub, so must check funct3) *)
     { valid = (opcode X) ==: Riscv.Op.intI;
       value = (funct3 X) @: ((funct3 X ==: of_string "3'b101") &: ((imm X).:[11,5] ==: of_string "7'h20")) };
-    (* Loads/stores: add offset *)
-    { valid = (opcode X ==: Riscv.Op.load) |: ((opcode X) ==: Riscv.Op.store);
-      value = of_bit_string "0000" };
-    (* Branch eq/ne: subtract to check zero bit *)
-    { valid = (opcode X ==: Riscv.Op.branch) &: ((funct3 X ==: Riscv.Funct3.beq) |: (funct3 X ==: Riscv.Funct3.bne));
-      value = of_bit_string "0001" };
-    (* Branch lt/ge: slt *)
-    { valid = (opcode X ==: Riscv.Op.branch) &: ((funct3 X ==: Riscv.Funct3.blt) |: (funct3 X ==: Riscv.Funct3.bge));
-      value = of_bit_string "0100" };
-    (* Branch lt/ge unsigned: sltu *)
-    { valid = (opcode X ==: Riscv.Op.branch) &: ((funct3 X ==: Riscv.Funct3.bltu) |: (funct3 X ==: Riscv.Funct3.bgeu));
-      value = of_bit_string "0110" };
-  ] in
+  ] (* Otherwise (load, store, branch, jal(r), lui, luipc): just add *)
+    ~default:(of_bit_string "0000") in
   (* ALU *)
   let alu_result = Alu.alu src1x src2x optype in
-  let writeval_x = forward_pipeline ~signal:alu_result ~stage:X in
 
   (* Branches *)
   (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)
-  branch_execute <== tree ~arity:2 ~f:(reduce ~f:(|:)) [
-    (opcode X) ==: Riscv.Op.branch &: (funct3 X ==: Riscv.Funct3.beq) &: (~: (gnd ||: alu_result));
-    (opcode X) ==: Riscv.Op.branch &: (funct3 X ==: Riscv.Funct3.bne) &: (gnd ||: alu_result);
-    (opcode X) ==: Riscv.Op.branch &: ((funct3 X ==: Riscv.Funct3.blt) |: (funct3 X ==: Riscv.Funct3.bltu)) &: alu_result.:(0);
-    (opcode X) ==: Riscv.Op.branch &: ((funct3 X ==: Riscv.Funct3.bge) |: (funct3 X ==: Riscv.Funct3.bgeu)) &: ~: alu_result.:(0);
+  let branch_cond = mux (funct3 X) [
+    (rs1 X) ==: (rs2 X); (* beq = 0 *)
+    (rs1 X) <>: (rs2 X); (* bne = 1 *)
+    gnd; gnd; (* 2,3 unused *)
+    (rs1 X) <+ (rs2 X); (* blt = 4 *)
+    (rs1 X) >=+ (rs2 X); (* bge = 5 *)
+    (rs1 X) <: (rs2 X); (* bltu = 6 *)
+    (rs1 X) >=: (rs2 X); (* bgeu = 7 *)
+  ] in
+  branch_execute <== reduce ~f:(|:) [
+    (opcode X) ==: Riscv.Op.branch &: branch_cond;
     (opcode X) ==: Riscv.Op.jal;
     (opcode X) ==: Riscv.Op.jalr;
   ];
-  (* Address to branch to is PC+imm for branches and jal, src1+imm for jalr *)
-  branch_pc <== (mux2 (opcode X ==: Riscv.Op.jalr) src1x (pc X)) +: (imm X);
+  (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
+  branch_pc <== alu_result;
+
+  (* Pass written value to M for writeback, bypassing, and address computation (each only where applicable) *)
+  rdval M <== forward_pipeline ~signal:(
+    (* If jal or jalr, then PC+4; otherwise from ALU (auipc and lui implemented in ALU src
+    selection, with lui's rs1=0 ensuring imm passes through ALU unchanged) *)
+    mux2 ((opcode X ==: Riscv.Op.jal) |: (opcode X ==: Riscv.Op.jalr)) (pc X +: of_string "32'd4") alu_result
+  ) ~stage:X M;
 
 
   (* Memory stage *)
-  (* Generate fields: type (00 = no access, 10 = load, 11 = store); size (00 = byte, 01 = half, 10 = word); addr; data *)
   let load = (opcode M ==: Riscv.Op.load) in
   let store = (opcode M ==: Riscv.Op.store) in
+  (* Generate fields: type (00 = no access, 10 = load, 11 = store); size (00 = byte, 01 = half, 10 = word); addr; data *)
   let mem_access = (load |: store) @: store in
   let mem_size = (funct3 M).:[1,0] in
-  let mem_addr = writeval_x M in
+  let mem_addr = rdval M in
   (* Grab mem data from rs2 for stores (imm used for ALU) *)
   let mem_data = (rs2val M) in
 
@@ -170,26 +178,28 @@ let cpu ~clock ~reset ~insn_in ~data_in =
     mux2 unsigned_extend (uresize data_in.:[15,0] 32) (sresize data_in.:[15,0] 32);
     data_in
   ] in
-  let writeval_m = forward_pipeline ~signal:(
-    mux2 load loaded_val (writeval_x M)
-  ) ~stage:M in
+
+  (* Value in rd at W is either that from X or value from memory *)
+  rdval W <== forward_pipeline ~signal:(
+    mux2 load loaded_val (rdval M)
+  ) ~stage:M W;
 
 
   (* Writeback stage *)
-  reg_write <== (writeval_m W);
+  reg_write <== (rdval W);
   reg_dest <== (rd W);
 
 
   (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)? ultimately only two possible things to bypass;
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
-  (rs1val X) <== mux2 (rs1 X ==: rd M) (writeval_x M) (
-                  mux2 (rs1 X ==: rd W) (writeval_m W) (
+  (rs1val X) <== mux2 ((rs1 X ==: rd M) &: (rs1 X <>: zero 5)) (rdval M) (
+                  mux2 ((rs1 X ==: rd W) &: (rs1 X <>: zero 5)) (rdval W) (
                   rsvals.(0) X));
-  (rs2val X) <== mux2 (rs2 X ==: rd M) (writeval_x M) (
-                  mux2 (rs2 X ==: rd W) (writeval_m W) (
+  (rs2val X) <== mux2 ((rs2 X ==: rd M) &: (rs2 X <>: zero 5)) (rdval M) (
+                  mux2 ((rs2 X ==: rd W) &: (rs2 X <>: zero 5)) (rdval W) (
                   rsvals.(1) X));
   (* for store data *)
-  (rs2val M) <== mux2 (rs2 M ==: rd W) (writeval_m W) (rsvals.(1) M);
+  (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5)) (rdval W) (rsvals.(1) M);
 
 
   (* TODO: Stall logic *)

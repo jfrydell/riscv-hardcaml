@@ -10,7 +10,7 @@ module Op = struct
   let jal = of_bit_string "1101111"
   let jalr = of_bit_string "1100111"
   let lui = of_bit_string "0110111"
-  let luiPc = of_bit_string "0010111"
+  let auiPc = of_bit_string "0010111"
   let env = of_bit_string "1110011"
 end
 
