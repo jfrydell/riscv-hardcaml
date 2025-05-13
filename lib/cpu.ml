@@ -2,6 +2,37 @@
 open Base
 open Hardcaml
 
+(* Interface *)
+module I = struct
+  type 'a t =
+    { clock: 'a
+    ; reset: 'a
+    ; insn: 'a [@bits 32]
+    ; data: 'a [@bits 32]
+    }
+  [@@deriving hardcaml]
+end
+module MemReq = struct
+  type 'a t =
+    { addr: 'a [@bits 32]
+    (* 0 = no request, 1 = load/store *)
+    ; valid: 'a
+    ; store: 'a
+    (* 00 = byte, 01 = half, 10 = word *)
+    ; size: 'a [@bits 2]
+    ; store_data: 'a [@bits 32]
+    }
+  [@@deriving hardcaml]
+end
+module O = struct
+  type 'a t =
+    { pc: 'a [@bits 32]
+    ; access: 'a MemReq.t
+    }
+  [@@deriving hardcaml]
+end
+
+
 type stage = F | D | X | M | W
 let stage_index = function F -> 0 | D -> 1 | X -> 2 | M -> 3 | W -> 4
 let index_stage = function 0 -> F | 1 -> D | 2 -> X | 3 -> M | 4 -> W | _ -> failwith "invalid stage"
@@ -45,12 +76,12 @@ let pipe_wires width =
 
 
 (* Main CPU pipeline *)
-let cpu ~clock ~reset ~insn_in ~data_in =
+let cpu (inputs: Signal.t I.t) =
   let open Signal in
 
   (* Pipeline stuff *)
   (* Pipeline regs are falling edge *)
-  let regspec = Reg_spec.create ~clock ~reset () |> Reg_spec.override ~clock_edge:(Edge.Falling) in
+  let regspec = Reg_spec.create ~clock:inputs.clock ~reset:inputs.reset () |> Reg_spec.override ~clock_edge:(Edge.Falling) in
   (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
   let stall_decode = wire 1 in
   let stall = function
@@ -68,7 +99,7 @@ let cpu ~clock ~reset ~insn_in ~data_in =
   let next_pc = wire 32 in
   let pc_reg = reg regspec ~enable:vdd next_pc in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F in
-  let insn = forward_pipeline ~signal:insn_in ~stage:F ~default:(of_hex ~width:32 "00000013") in
+  let insn = forward_pipeline ~signal:inputs.insn ~stage:F ~default:(of_hex ~width:32 "00000013") in
   (* Next PC calculation. increment by 1 unless we are branching *)
   let branch_pc = wire 32 in
   next_pc <== mux2 branch_execute branch_pc (pc_reg +:. 1);
@@ -80,12 +111,12 @@ let cpu ~clock ~reset ~insn_in ~data_in =
   let reg_write = wire 32 in
   let reg_dest = wire 5 in
   let reg_srcs = [|decoded.rs1; decoded.rs2|] in
-  let write_port =  { Write_port.write_clock = clock
+  let write_port =  { Write_port.write_clock = inputs.clock
                     ; write_address = reg_dest
                     ; write_data = reg_write
                     ; write_enable = reg_dest <>: zero 5 } in
   let read_ports = Array.map reg_srcs ~f:(fun rs ->
-      { Read_port.read_clock = clock
+      { Read_port.read_clock = inputs.clock
       ; read_address = rs
       ; read_enable = vdd }
     ) in
@@ -165,18 +196,20 @@ let cpu ~clock ~reset ~insn_in ~data_in =
   let load = (opcode M ==: Riscv.Op.load) in
   let store = (opcode M ==: Riscv.Op.store) in
   (* Generate fields: type (00 = no access, 10 = load, 11 = store); size (00 = byte, 01 = half, 10 = word); addr; data *)
-  let mem_access = (load |: store) @: store in
-  let mem_size = (funct3 M).:[1,0] in
-  let mem_addr = rdval M in
-  (* Grab mem data from rs2 for stores (imm used for ALU) *)
-  let mem_data = (rs2val M) in
+  let access = MemReq.{
+    addr = rdval M;
+    size = (funct3 M).:[1,0];
+    valid = load |: store;
+    store;
+    store_data = rs2val M;
+  } in
 
   (* Get data in from memory (TODO: have valid interface with stalling) *)
   let unsigned_extend = (funct3 M).:(2) in
-  let loaded_val = mux mem_size [
-    mux2 unsigned_extend (uresize data_in.:[7,0] 32) (sresize data_in.:[7,0] 32);
-    mux2 unsigned_extend (uresize data_in.:[15,0] 32) (sresize data_in.:[15,0] 32);
-    data_in
+  let loaded_val = mux access.size [
+    mux2 unsigned_extend (uresize inputs.data.:[7,0] 32) (sresize inputs.data.:[7,0] 32);
+    mux2 unsigned_extend (uresize inputs.data.:[15,0] 32) (sresize inputs.data.:[15,0] 32);
+    inputs.data
   ] in
 
   (* Value in rd at W is either that from X or value from memory *)
@@ -205,5 +238,7 @@ let cpu ~clock ~reset ~insn_in ~data_in =
   (* TODO: Stall logic *)
   stall_decode <== gnd;
 
-
-  pc_reg, mem_addr, mem_access, mem_size, mem_data
+  O.{
+    pc = pc_reg;
+    access;
+  }
