@@ -80,8 +80,8 @@ let cpu (inputs: Signal.t I.t) =
   let open Signal in
 
   (* Pipeline stuff *)
-  (* Pipeline regs are falling edge *)
-  let regspec = Reg_spec.create ~clock:inputs.clock ~reset:inputs.reset () |> Reg_spec.override ~clock_edge:(Edge.Falling) in
+  (* Pipeline regs are rising edge to work with Cyclesim (everything in core must be same edge). Insn/data mem will be opposite. *)
+  let regspec = Reg_spec.create ~clock:inputs.clock ~reset:inputs.reset () in
   (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
   let stall_decode = wire 1 in
   let stall = function
@@ -111,24 +111,18 @@ let cpu (inputs: Signal.t I.t) =
   let reg_write = wire 32 in
   let reg_dest = wire 5 in
   let reg_srcs = [|decoded.rs1; decoded.rs2|] in
-  let write_port =  { Write_port.write_clock = inputs.clock
-                    ; write_address = reg_dest
-                    ; write_data = reg_write
-                    ; write_enable = reg_dest <>: zero 5 } in
-  let read_ports = Array.map reg_srcs ~f:(fun rs ->
-      { Read_port.read_clock = inputs.clock
-      ; read_address = rs
-      ; read_enable = vdd }
-    ) in
-  let regfile = Ram.create
-        ~collision_mode:Write_before_read
-        ~size:32
-        ~write_ports:[|write_port|]
-        ~read_ports
-        () in
-  let rsvals = Array.map2_exn reg_srcs regfile ~f:(fun rs rsv ->
-    mux2 (rs ==:. 0) (of_int ~width:32 0) rsv
-  ) in
+  let regfile = Regfile.create Regfile.I.{
+    rd = reg_dest;
+    rdval = reg_write;
+    rs = reg_srcs;
+    clock = inputs.clock;
+    reset = inputs.reset; (* WARN/TODO: unused in current implementation *)
+  } in
+  (* `rsvals` = unbypassed register values from register file *)
+  let rsvals = Array.map ~f:(fun v -> forward_pipeline ~signal:v ~stage:D) regfile.rsval in
+
+  (* Create wires for bypassed sources and written destination *)
+  let rs1val = pipe_wires 32 and rs2val = pipe_wires 32 and rdval = pipe_wires 32 in
 
   (* Place decoded values into pipeline *)
   let opcode = forward_pipeline ~signal:decoded.opcode ~stage:D
@@ -138,11 +132,6 @@ let cpu (inputs: Signal.t I.t) =
   and imm = forward_pipeline ~signal:decoded.imm ~stage:D
   and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D
   and funct7 = forward_pipeline ~signal:decoded.funct7 ~stage:D in
-  (* `rsvals` = unbypassed register values from register file *)
-  let rsvals = Array.map ~f:(fun v -> forward_pipeline ~signal:v ~stage:D) rsvals in
-
-  (* Create wires for bypassed sources and written destination *)
-  let rs1val = pipe_wires 32 and rs2val = pipe_wires 32 and rdval = pipe_wires 32 in
 
   (* Execute stage *)
   (* First operands is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
