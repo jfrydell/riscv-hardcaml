@@ -41,6 +41,9 @@ type insn =
   | AuiPc of regs01
   | Env (* TODO: ecall vs ebreak *)
 
+(* Nop = addi $0, $0, 0 *)
+let nop = IntImm (Add, { rd = 0; rs1 = 0; imm = Int32.zero })
+
 
 (* Useful defs for binary *)
 module Binary = struct
@@ -188,3 +191,7 @@ let to_int32 =
   | Lui r -> Int32.(+) (regsu r) Binary.Op.lui
   | AuiPc r -> Int32.(+) (regsu r) Binary.Op.auiPc
   | Env -> Binary.Op.env
+
+
+(* Check nop translation *)
+let%test "nop_binary" = Int32.(=) (Int32.of_string "0x13") (to_int32 nop)

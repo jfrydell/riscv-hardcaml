@@ -1,4 +1,4 @@
 (executable
  (public_name riscvhardcaml)
  (name main)
- (libraries riscvhardcaml))
+ (libraries riscvhardcaml sim riscvemulate))

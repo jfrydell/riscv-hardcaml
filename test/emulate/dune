@@ -1,4 +1,0 @@
-(library
- (name riscvemulate)
- (libraries base)
- (preprocess (pps ppx_jane)))

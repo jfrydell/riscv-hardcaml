@@ -1,0 +1,4 @@
+(library
+ (name sim)
+ (libraries base hardcaml riscvhardcaml riscvemulate)
+ (preprocess (pps ppx_jane)))

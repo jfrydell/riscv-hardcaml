@@ -28,6 +28,8 @@ module O = struct
   type 'a t =
     { pc: 'a [@bits 32]
     ; access: 'a MemReq.t
+    (* 1 if an instruction will be committed on the next cycle. Register file state will be in sync with this. *)
+    ; will_commit: 'a
     }
   [@@deriving hardcaml]
 end
@@ -100,6 +102,7 @@ let cpu (inputs: Signal.t I.t) =
   let pc_reg = reg regspec ~enable:vdd next_pc in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F in
   let insn = forward_pipeline ~signal:inputs.insn ~stage:F ~default:(of_hex ~width:32 "00000013") in
+  let is_insn = forward_pipeline ~signal:vdd ~stage:F in (* for tracking commits *)
   (* Next PC calculation. increment by 1 unless we are branching *)
   let branch_pc = wire 32 in
   next_pc <== mux2 branch_execute branch_pc (pc_reg +:. 1);
@@ -231,4 +234,5 @@ let cpu (inputs: Signal.t I.t) =
   O.{
     pc = pc_reg;
     access;
+    will_commit = is_insn W;
   }

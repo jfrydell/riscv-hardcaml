@@ -1,9 +1,7 @@
 open! Base
 
 include Riscv
-open Emulate_user
-type state = Emulate_user.state
-let step = Emulate_user.step
+include Emulate_user
 
 (* Create an initial processor state with the given program to run starting at the given address *)
 let init ~insns ~addr =
