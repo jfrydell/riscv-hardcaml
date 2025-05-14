@@ -235,8 +235,9 @@ let cpu (inputs: Signal.t I.t) =
   (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5)) (rdval W) (rsvals.(1) M);
 
 
-  (* TODO: Stall logic *)
-  stall_decode <== gnd;
+  (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
+  let reg_is_load_dest rs = (opcode X ==: Riscv.Op.load) &: (rs ==: rd X) &: (rs <>: zero 5) in
+  stall_decode <== (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
 
   O.{
     pc = pc_reg;
