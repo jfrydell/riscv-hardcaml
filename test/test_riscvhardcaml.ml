@@ -27,13 +27,13 @@ let _ = if Array.equal Int32.equal (Sim.Cpu.regs sim_cpu) regs
 Generates instructions on-the-fly to account for randomly branching around. *)
 let compare_emulator ~insn_count ~mem_range ~reg_max =
   (* Init *)
-  let emulator = Riscvemulate.blank in
+  let emulator = Riscvemulate.blank () in
   let sim_cpu = Sim.Cpu.create () in
   let sim_mem = Hashtbl.copy emulator.memory in
   let debug = true in
 
   (* Run *)
-  for i = 0 to insn_count do
+  for i = 1 to insn_count do
     Stdio.printf "\n\n== CYCLE %d ==\n" i;
 
     (* Run simulator, injecting instructions as it fetches (due to pipelining, simulator PC runs ahead of emulation) *)
@@ -80,7 +80,10 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
   ))) then
     failwith "memory different at end"
 
-(* Test! *)
-let _ = Random.init 1
-(* mem_range being small risks stores overwriting instructions, which causes emulator mismatch if within pipeline already *)
-let _ = compare_emulator ~insn_count:1000 ~mem_range:Int32.(of_int_exn 1000, of_int_exn 1024) ~reg_max:8
+(* First run small tests for debuggability: 100 tests of 2 instructions each *)
+let _ = for i = 1 to 100 do
+  Stdio.printf "\n\n\n= Running small test %d =" i;
+  Random.init i;
+  (* mem_range being small risks stores overwriting instructions, which causes emulator mismatch if within pipeline already *)
+  compare_emulator ~insn_count:2 ~mem_range:Int32.(of_int_exn 1000, of_int_exn 1024) ~reg_max:8
+done

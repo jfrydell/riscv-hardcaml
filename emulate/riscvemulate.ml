@@ -5,7 +5,7 @@ include Emulate_user
 module Random = Fuzz
 
 (* Create an empty processor state, with memory, PC, and regs initialized to 0 *)
-let blank = {
+let blank () = {
     regs = Array.create ~len:32 Int32.zero;
     pc = ref Int32.zero;
     memory = Hashtbl.create (module Int32);

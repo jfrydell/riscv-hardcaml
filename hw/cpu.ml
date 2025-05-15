@@ -166,13 +166,13 @@ let cpu (inputs: Signal.t I.t) =
   (* Branches *)
   (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)
   let branch_cond = mux (funct3 X) [
-    (rs1 X) ==: (rs2 X); (* beq = 0 *)
-    (rs1 X) <>: (rs2 X); (* bne = 1 *)
+    (rs1val X) ==: (rs2val X); (* beq = 0 *)
+    (rs1val X) <>: (rs2val X); (* bne = 1 *)
     gnd; gnd; (* 2,3 unused *)
-    (rs1 X) <+ (rs2 X); (* blt = 4 *)
-    (rs1 X) >=+ (rs2 X); (* bge = 5 *)
-    (rs1 X) <: (rs2 X); (* bltu = 6 *)
-    (rs1 X) >=: (rs2 X); (* bgeu = 7 *)
+    (rs1val X) <+ (rs2val X); (* blt = 4 *)
+    (rs1val X) >=+ (rs2val X); (* bge = 5 *)
+    (rs1val X) <: (rs2val X); (* bltu = 6 *)
+    (rs1val X) >=: (rs2val X); (* bgeu = 7 *)
   ] in
   branch_execute <== reduce ~f:(|:) [
     (opcode X) ==: Riscv.Op.branch &: branch_cond;
