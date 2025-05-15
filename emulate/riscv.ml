@@ -106,12 +106,12 @@ let of_int32_exn insn =
     )
   else if opcode = (Int32.to_int_exn Binary.Op.intI) then
     let op, mask = match Binary.Funct3.aluop.(funct3) with
-        | Sll -> Sll, 0x1f (* Shifts only take 5 imm bits *)
+        | Sll -> Sll, 0x1f (* Shifts only take 5 imm bits and don't sign-extend *)
         | Srl when funct7 = 0x20 -> Sra, 0x1f
         | Srl -> Srl, 0x1f
-        | op -> op, 0xfff
+        | op -> op, 0xffffffff (* Others take all bits, sign-extended *)
     in
-    IntImm (op, {rd; rs1; imm = Int32.(immi land of_int_exn mask)})
+    IntImm (op, {rd; rs1; imm = Int32.(immi land of_int_trunc mask)})
   else let mem_size () = match bits insn 13 12 with
       | 0 -> Byte
       | 1 -> Half
