@@ -95,7 +95,7 @@ let cpu (inputs: Signal.t I.t) =
     | F | D -> stall_decode
     | X | M | W -> gnd in
   (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
-  let branch_execute = wire 1 in
+  let branch_execute = wire 1 -- "branch from execute" in
   let bubble s =
     let withoutstall = function D | X -> branch_execute | _ -> gnd in
     withoutstall s ||: stall (index_stage (stage_index s - 1))
@@ -142,12 +142,13 @@ let cpu (inputs: Signal.t I.t) =
   and funct7 = forward_pipeline ~signal:decoded.funct7 ~stage:D in
 
   (* Execute stage *)
-  (* First operands is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
+  (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let src1x = mux2
                 ((opcode X ==: Riscv.Op.branch) |: (opcode X ==: Riscv.Op.jal) |: (opcode X ==: Riscv.Op.auiPc))
                 (pc X) (rs1val X) -- "EX ALU src1" in
+  (* Second is rs2 for R-type, imm otherwise (including branch, where rs2 is used for comparison while ALU calculates PC) *)
   let src2x = mux2
-                ((opcode X ==: Riscv.Op.intR) |: (opcode X ==: Riscv.Op.branch))
+                (opcode X ==: Riscv.Op.intR)
                 (rs2val X) (imm X) -- "EX ALU src2" in
   (* ALU optype selection based on opcode (TODO: lift to previous stage for timing probably) *)
   let optype = priority_select_with_default [
