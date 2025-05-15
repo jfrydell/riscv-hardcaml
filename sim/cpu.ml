@@ -20,7 +20,7 @@ let cycle (cpu: Sim.t) memory =
   let insn = Riscvemulate.load ~memory ~addr:(Bits.to_int32 !(outputs.pc)) ~size:4 ~extend:Riscvemulate.Unsigned in
   inputs.insn := Bits.of_int32 ~width:32 insn;
   (* DEBUG *)
-  (* Stdio.printf "PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
+  Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn));
 
   (* Process load *)
   let addr = Bits.to_int32 !(outputs.access.addr)
@@ -35,9 +35,11 @@ let cycle (cpu: Sim.t) memory =
   (* Run standard cycle, propagating inputs, updating regs, and propagating outputs *)
   Cyclesim.cycle cpu
 
-(* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 5 cycles. *)
-let cycle_insn (cpu: Sim.t) memory =
+(* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 5 cycles.
+Runs the given function prior to each cycle (for example, to inject instructions at PC for hacky testing) *)
+let cycle_insn ?f:(cycle_fn = fun _ -> ()) (cpu: Sim.t) memory =
   match List.range 0 5 |> List.find ~f:(fun _ ->
+    cycle_fn ();
     let committed = Bits.to_bool !((Cyclesim.outputs cpu).will_commit) in
     cycle cpu memory;
     committed
@@ -51,3 +53,6 @@ let regs (cpu: Sim.t) =
   |> Option.value_exn
   |> Cyclesim.Memory.read_all
   |> Array.map ~f:Bits.to_int32
+
+(* Get the current PC from the simulator *)
+let pc (cpu: Sim.t) = Bits.to_int32 !((Cyclesim.outputs cpu).pc)

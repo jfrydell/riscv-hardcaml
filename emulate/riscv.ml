@@ -145,7 +145,7 @@ let of_int32_exn insn =
   else if opcode = (Int32.to_int_exn Binary.Op.lui) then
     Lui { rd; imm = immu }
   else if opcode = (Int32.to_int_exn Binary.Op.auiPc) then
-    AuiPc { rd; imm = immi }
+    AuiPc { rd; imm = immu }
   else if opcode = (Int32.to_int_exn Binary.Op.env) then
     Env
   else failwith "illegal instruction: opcode"
@@ -198,6 +198,9 @@ let to_int32 =
 (* Test bits *)
 let%test "bits 1" = bits Int32.(of_string "0x00708093") 6 0 = 19
 let%test "bits 2" = bits Int32.(of_string "0x00012980") 6 0 = 0
+let%test "bits 3" = bits Int32.(of_string "0x7fc71317") 31 12 = 523377
+
+let%test "of_int_sign 1" = of_int_sign ~w:32 (0x1000 * 523377) |> Int32.(=) (Int32.of_int_exn 2143752192)
 
 (* Check some basic translation *)
 let%test "binary nop" = Int32.(=) (Int32.of_string "0x13") (to_int32 nop)
@@ -213,8 +216,9 @@ let%test "roundtrip nop" = roundtrip nop
 let%test "roundtrip basic addi" = roundtrip (IntImm (Add, {rd = 1; rs1 = 1; imm = Int32.of_int_exn 12}))
 let%test "roundtrip basic add" = roundtrip (IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1}))
 let%test "roundtrip sw" = roundtrip (Store (Word, {rs1 = 2; rs2 = 7; imm = Int32.of_int_exn 2}))
+let%test "roundtrip auipc" = roundtrip (AuiPc {rd = 6; imm = Int32.of_int_exn 2143752192})
 
-(* let failing_insn = (Store (Word, {rs1 = 2; rs2 = 7; imm = Int32.of_int_exn 2}))
+(* let failing_insn = (AuiPc {rd = 6; imm = Int32.of_int_exn 2143752192})
 let _ = Stdio.printf "Original sexp:  "; Stdio.print_s (sexp_of_insn failing_insn)
 let _ = Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (to_int32 failing_insn))
 let _ = Stdio.printf "Roundtrip sexp: "; Stdio.print_s (sexp_of_insn (of_int32_exn (to_int32 failing_insn))) *)

@@ -29,11 +29,16 @@ let store ~memory ~addr ~value ~size =
     Hashtbl.set memory ~key:Int32.(addr + of_int_exn b) ~data:((value lsr (8*b)) land 255)
   done
 
+(* Instruction at current PC *)
+let current_pc_insn {pc; memory; _} =
+  let insn = load ~memory ~addr:!pc ~size:4 ~extend:Unsigned in
+  (* Stdio.printf "emulate PC %d = %08x\n" (Int32.to_int_exn !pc) (Int32.to_int_exn insn); *)
+  Riscv.of_int32_exn insn
 
 let step {regs; pc; memory} =
   let open Riscv in
   (* Read instruction and convert to expected format *)
-  let insn = Riscv.of_int32_exn (load ~memory ~addr:!pc ~size:4 ~extend:Unsigned) in
+  let insn = current_pc_insn {regs; pc; memory} in
 
   (* Interpeter helpers *)
   let less_than_unsigned a b = Int32.(match is_negative a, is_negative b with
