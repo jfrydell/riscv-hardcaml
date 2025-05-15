@@ -3,32 +3,32 @@
 open! Base
 
 (* A register *)
-type reg = int [@@deriving equal]
+type reg = int [@@deriving equal, sexp]
 
 (* Signed or unsigned *)
 type signedness = Signed | Unsigned
-  [@@deriving equal]
+  [@@deriving equal, sexp]
 
 (* Type of integer ALU operation (immediate or register) *)
 type aluop =
   | Add | Sub | Xor | Or | And
   | Sll | Srl | Sra | Slt | Sltu
-  [@@deriving equal]
+  [@@deriving equal, sexp]
 
 (* Type of branch *)
 type branchop =
-  | Eq | Neq | Lt of signedness | Ge of signedness [@@deriving equal]
+  | Eq | Neq | Lt of signedness | Ge of signedness [@@deriving equal, sexp]
 (* Size of a memory op *)
-type memsize = Byte | Half | Word [@@deriving equal]
+type memsize = Byte | Half | Word [@@deriving equal, sexp]
 
 (* The registers (2 in 1 out) specified by an R-type instruction *)
-type regs21 = { rd: reg; rs1: reg; rs2: reg } [@@deriving equal]
+type regs21 = { rd: reg; rs1: reg; rs2: reg } [@@deriving equal, sexp]
 (* Registers (1 in 1 out) and immediate specified by an I-type instruction *)
-type regs11 = { rd: reg; rs1: reg; imm: int32 } [@@deriving equal]
+type regs11 = { rd: reg; rs1: reg; imm: int32 } [@@deriving equal, sexp]
 (* Registers (2 in 0 out) and immediate for B-type or S-type instructions *)
-type regs20 = { rs1: reg; rs2: reg; imm: int32 } [@@deriving equal]
+type regs20 = { rs1: reg; rs2: reg; imm: int32 } [@@deriving equal, sexp]
 (* Registers (0 in 1 out) and immediate for U-type or J-type instructions *)
-type regs01 = { rd: reg; imm: int32 } [@@deriving equal]
+type regs01 = { rd: reg; imm: int32 } [@@deriving equal, sexp]
 
 type insn =
   | IntReg of aluop * regs21
@@ -41,7 +41,7 @@ type insn =
   | Lui of regs01
   | AuiPc of regs01
   | Env (* TODO: ecall vs ebreak *)
-  [@@deriving equal]
+  [@@deriving equal, sexp]
 
 (* Nop = addi $0, $0, 0 *)
 let nop = IntImm (Add, { rd = 0; rs1 = 0; imm = Int32.zero })
@@ -153,7 +153,7 @@ let of_int32_exn insn =
 
 (* Move a set of bits from an int32 to another location within the int32 *)
 let move_bits value max_ min_ loc =
-  let mask = Int32.of_int_exn (2 ** (max_ - min_ + 1)) in
+  let mask = Int32.of_int_exn (2 ** (max_ - min_ + 1) - 1) in
   Int32.(((value lsr min_) land mask) lsl loc)
 
 (* Convert `insn` to binary *)
@@ -175,7 +175,7 @@ let to_int32 =
     let opbits, _ = Option.value_exn (Array.findi Binary.Funct3.aluop
       ~f:(fun _ o -> equal_aluop o op)) in
     Int32.(of_int_exn opbits lsl 12 + extra)
-  and mem_size s = Int32.(of_int_exn (match s with Byte -> 1 | Half -> 2 | Word -> 3) lsl 12)
+  and mem_size s = Int32.(of_int_exn (match s with Byte -> 0 | Half -> 1 | Word -> 2) lsl 12)
   and mem_sign s = Int32.(of_int_exn (match s with Signed -> 0 | Unsigned -> 1) lsl 14)
   and brop op =
     let f3 = match op with
@@ -212,3 +212,9 @@ let roundtrip_bin b = Int32.(=) (to_int32 (of_int32_exn b)) b
 let%test "roundtrip nop" = roundtrip nop
 let%test "roundtrip basic addi" = roundtrip (IntImm (Add, {rd = 1; rs1 = 1; imm = Int32.of_int_exn 12}))
 let%test "roundtrip basic add" = roundtrip (IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1}))
+let%test "roundtrip sw" = roundtrip (Store (Word, {rs1 = 2; rs2 = 7; imm = Int32.of_int_exn 2}))
+
+(* let failing_insn = (Store (Word, {rs1 = 2; rs2 = 7; imm = Int32.of_int_exn 2}))
+let _ = Stdio.printf "Original sexp:  "; Stdio.print_s (sexp_of_insn failing_insn)
+let _ = Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (to_int32 failing_insn))
+let _ = Stdio.printf "Roundtrip sexp: "; Stdio.print_s (sexp_of_insn (of_int32_exn (to_int32 failing_insn))) *)

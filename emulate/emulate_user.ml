@@ -8,6 +8,7 @@ type state = {
   pc: int32 ref;
   memory: (int32, int) Hashtbl.t; (* Byte-addressed memory (range 0-255), defaulting to zero *)
 }
+[@@deriving sexp_of]
 
 (* Load a value from memory, extending as necessary to 32 bits *)
 let load ~memory ~addr ~size ~extend =
@@ -31,8 +32,6 @@ let store ~memory ~addr ~value ~size =
 
 let step {regs; pc; memory} =
   let open Riscv in
-  (* Alignment exception (TODO: better (monadic?) exception mechanism) *)
-  if Int32.(!pc % (of_int_exn 4) <> zero) then failwith "PC alignment exception" else
   (* Read instruction and convert to expected format *)
   let insn = Riscv.of_int32_exn (load ~memory ~addr:!pc ~size:4 ~extend:Unsigned) in
 
@@ -54,7 +53,7 @@ let step {regs; pc; memory} =
   in
 
   (* Main interpreter *)
-  match insn with
+  (match insn with
     | IntReg (op, {rd; rs1; rs2}) -> alu rd rs1 regs.(rs2) op
     | IntImm (op, {rd; rs1; imm}) -> alu rd rs1 imm op
     | Load (size, sign, {rd; rs1; imm}) ->
@@ -76,3 +75,6 @@ let step {regs; pc; memory} =
     | Lui {rd; imm} -> regs.(rd) <- imm
     | AuiPc {rd; imm} -> Int32.(regs.(rd) <- !pc + imm)
     | Env -> failwith "Env call"
+  );
+  (* Preserve r0 *)
+  regs.(0) <- Int32.zero
