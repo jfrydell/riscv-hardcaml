@@ -30,7 +30,7 @@ let create I.{rd; rdval; rs; clock; reset=_reset} =
     write_enable = rd <>: zero 5;
   } in
   let rsval_raw = multiport_memory ~name:"regfile" ~write_ports:[|write_port|] ~read_addresses:rs 32 in
-  let rsval_fwd = Array.map2_exn rs rsval_raw ~f:(fun rs regval -> mux2 (rs ==: rd) rdval regval) in
+  let rsval_fwd = Array.map2_exn rs rsval_raw ~f:(fun rs regval -> mux2 ((rs ==: rd) &: (rd <>: zero 5)) rdval regval) in
   O.{
     rsval = rsval_fwd
   }

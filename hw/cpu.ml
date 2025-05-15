@@ -90,7 +90,7 @@ let cpu (inputs: Signal.t I.t) =
   (* Pipeline regs are rising edge to work with Cyclesim (everything in core must be same edge). Insn/data mem will be opposite. *)
   let regspec = Reg_spec.create ~clock:inputs.clock ~reset:inputs.reset () in
   (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
-  let stall_decode = wire 1 in
+  let stall_decode = wire 1 -- "stall decode" in
   let stall = function
     | F | D -> stall_decode
     | X | M | W -> gnd in
@@ -223,14 +223,14 @@ let cpu (inputs: Signal.t I.t) =
 
   (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)? ultimately only two possible things to bypass;
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
-  (rs1val X) <== mux2 ((rs1 X ==: rd M) &: (rs1 X <>: zero 5)) (rdval M) (
-                  mux2 ((rs1 X ==: rd W) &: (rs1 X <>: zero 5)) (rdval W) (
+  (rs1val X) <== mux2 ((rs1 X ==: rd M) &: (rs1 X <>: zero 5) -- "bypassMX1") (rdval M) (
+                  mux2 ((rs1 X ==: rd W) &: (rs1 X <>: zero 5) -- "bypassWX1") (rdval W) (
                   rsvals.(0) X));
-  (rs2val X) <== mux2 ((rs2 X ==: rd M) &: (rs2 X <>: zero 5)) (rdval M) (
-                  mux2 ((rs2 X ==: rd W) &: (rs2 X <>: zero 5)) (rdval W) (
+  (rs2val X) <== mux2 ((rs2 X ==: rd M) &: (rs2 X <>: zero 5) -- "bypassMX2") (rdval M) (
+                  mux2 ((rs2 X ==: rd W) &: (rs2 X <>: zero 5) -- "bypassWX2") (rdval W) (
                   rsvals.(1) X));
   (* for store data *)
-  (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5)) (rdval W) (rsvals.(1) M);
+  (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5) -- "bypassWM2") (rdval W) (rsvals.(1) M);
 
 
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)

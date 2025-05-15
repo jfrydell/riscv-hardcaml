@@ -38,7 +38,9 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
 
     (* Run simulator, injecting instructions as it fetches (due to pipelining, simulator PC runs ahead of emulation) *)
     Sim.Cpu.cycle_insn ~f:(fun _ ->
-      let new_insn = Riscvemulate.Random.instruction ~mem_range ~reg_max () in
+      (* If branch to near current PC, we may overwrite instruction before it commits and emulator executes it *)
+      let new_insn = Riscvemulate.Random.instruction ~mem_range ~reg_max
+                      ~branch_cond:(fun offset -> Int32.(abs offset > of_int_exn 20)) () in
       if debug then (
         Stdio.printf "Writing "; Stdio.print_s (Riscvemulate.sexp_of_insn new_insn);
         Stdio.printf "(binary: %08x) to PC %d (fetched by sim)\n"

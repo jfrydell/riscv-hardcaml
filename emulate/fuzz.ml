@@ -23,15 +23,21 @@ let branchop () = Riscv.(
     | _ -> failwith "invalid random"
   )
 
+let imm maxbit minbit =
+  let unsigned = Int32.(lsl) (Random.int32 (Int.pow 2 (maxbit-minbit+1) |> Int32.of_int_trunc)) minbit in
+  Int32.((unsigned lsl Int.(32 - maxbit)) asr Int.(32 - maxbit))
+
+(* Rejection sampling *)
+let rec resample ~f ~cond =
+  let rel = f () in if cond rel then rel else resample ~f ~cond
 
 (* Generates a single random instruction with the given constraints on register and memory offset choice
-(small range should make hazards more common) *)
-let instruction ~mem_range:(memmin, memmax) ?reg_max:(reg_max = 32) () =
+(small range should make hazards more common). Also takes a function constraining branch/jump offsets,
+which is necessary for our hacky testing (which breaks if we fetch the same PC twice in ~5 cycles). *)
+let instruction ~mem_range:(memmin, memmax) ?reg_max:(reg_max = 32) ?branch_cond:(branch_cond = fun _ -> true) () =
   let reg () = Random.int reg_max in
-  let imm maxbit minbit =
-    let unsigned = Int32.(lsl) (Random.int32 (Int.pow 2 (maxbit-minbit+1) |> Int32.of_int_trunc)) minbit in
-    Int32.((unsigned lsl Int.(32 - maxbit)) asr Int.(32 - maxbit)) in
   let addr () = Random.int32_incl memmin memmax in
+  let branch_imm maxbit minbit = resample ~f:(fun _ -> imm maxbit minbit) ~cond:branch_cond in
   match Random.int 9 with
   | 0 -> Riscv.IntReg (aluop ~subenabled:true (), {rd = reg (); rs1 = reg (); rs2 = reg ()})
   | 1 -> let aluop = aluop ~subenabled:false () in
@@ -42,9 +48,9 @@ let instruction ~mem_range:(memmin, memmax) ?reg_max:(reg_max = 32) () =
           })
   | 2 -> Riscv.Load (memsize (), sign (), {rd = reg (); rs1 = reg (); imm = addr ()})
   | 3 -> Riscv.Store (memsize (), {rs1 = reg (); rs2 = reg (); imm = addr ()})
-  | 4 -> Riscv.Branch (branchop (), {rs1 = reg (); rs2 = reg (); imm = imm 12 1})
-  | 5 -> Riscv.Jal {rd = reg (); imm = imm 20 2}
-  | 6 -> Riscv.Jalr {rs1 = reg (); rd = reg (); imm = imm 11 0}
+  | 4 -> Riscv.Branch (branchop (), {rs1 = reg (); rs2 = reg (); imm = branch_imm 12 1})
+  | 5 -> Riscv.Jal {rd = reg (); imm = branch_imm 20 2}
+  | 6 -> Riscv.Jalr {rs1 = reg (); rd = reg (); imm = branch_imm 11 0}
   | 7 -> Riscv.Lui {rd = reg (); imm = imm 31 12}
   | 8 -> Riscv.AuiPc {rd = reg (); imm = imm 31 12}
   | _ -> failwith "invalid random"
@@ -62,3 +68,9 @@ let%test "disassembler roundtrip fuzz" =
       failwith "bad roundtrip"
     )
   ); true
+
+let%test "imm covers upper range" =
+  let _ = Random.init 1 in
+  let max10 = List.init 20 ~f:(fun _ -> imm 12 1)
+    |> List.max_elt ~compare:Int32.compare |> Option.value_exn in
+  Int32.(max10 > of_int_exn 1500)

@@ -9,9 +9,9 @@ let () = Rtl.print Verilog circuit *)
 
 (* Debug with waveform *)
 let program = Riscvemulate.[
-  Branch (Eq, {rs1 = 4; rs2 = 3; imm = Int32.of_int_exn 8});
-  IntImm (Add, {rd = 1; rs1 = 0; imm = Int32.of_int_trunc 10}); (* skip *)
-  IntImm (Add, {rd = 2; rs1 = 1; imm = Int32.of_int_trunc 5}); (* r2 = 5 is correct *)
+  Jal {rd = 0; imm = Int32.of_int_exn 8};
+  nop;
+  IntImm (Add, {rd = 2; rs1 = 0; imm = Int32.of_int_trunc 10}); (* should get 10, not 14 *)
   nop;
   nop;
   nop;
