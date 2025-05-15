@@ -4,8 +4,8 @@ open Hardcaml
 module Sim = Cyclesim.With_interface (Riscvhardcaml.Cpu.I) (Riscvhardcaml.Cpu.O)
 
 (* Create simulation, running combinational logic so outputs are visible (doesn't do anything i think because default is 0) *)
-let create () =
-  let cpu = Sim.create ~config:(Cyclesim.Config.trace `All_named) Riscvhardcaml.Cpu.cpu in
+let create ?config:(config=Cyclesim.Config.trace `All_named) () =
+  let cpu = Sim.create ~config Riscvhardcaml.Cpu.cpu in
   Cyclesim.cycle_check cpu;
   Cyclesim.cycle_before_clock_edge cpu;
   cpu
@@ -19,6 +19,8 @@ let cycle (cpu: Sim.t) memory =
   (* Fetch instruction from memory, or use provided custom `insn` getter *)
   let insn = Riscvemulate.load ~memory ~addr:(Bits.to_int32 !(outputs.pc)) ~size:4 ~extend:Riscvemulate.Unsigned in
   inputs.insn := Bits.of_int32 ~width:32 insn;
+  (* DEBUG *)
+  Stdio.printf "PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn));
 
   (* Process load *)
   let addr = Bits.to_int32 !(outputs.access.addr)

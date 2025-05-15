@@ -38,6 +38,7 @@ end
 type stage = F | D | X | M | W
 let stage_index = function F -> 0 | D -> 1 | X -> 2 | M -> 3 | W -> 4
 let index_stage = function 0 -> F | 1 -> D | 2 -> X | 3 -> M | 4 -> W | _ -> failwith "invalid stage"
+let stage_names = [|"F"; "D"; "X"; "M"; "W"|]
 
 type pipe_signal = stage -> Signal.t
 
@@ -59,7 +60,11 @@ let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero
     if si < (stage_index stage) then failwith "Tried to extract signal from pipeline before it was added"
     else if si = (stage_index stage) then signal
     else let prev = get_memo (si-1) in Signal.(
-      reg regspec ~enable:(~: (stall (index_stage si))) (mux2 (bubble (index_stage si)) default prev)
+      let s = reg regspec ~enable:(~: (stall (index_stage si))) (mux2 (bubble (index_stage si)) default prev) in
+      (* Stdio.printf "%d: " si;
+      Stdio.print_s (sexp_of_list sexp_of_string (names signal)); *)
+      set_names s (List.map (names signal) ~f:(fun n -> stage_names.(si) ^ "." ^ n));
+      s
     )
 
   (* Just using `get_signal` would rebuild pipeline on each access. Memoization avoids (while lazying building only needed latches) *)
@@ -72,8 +77,8 @@ let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero
   in (fun s -> get_memo (stage_index s))
 
 (* Creates a new wire for each stage of the pipeline, returning a `pipe_signal` referencing these wires *)
-let pipe_wires width =
-  let wires = Array.init 5 ~f:(fun _ -> Signal.wire width) in
+let pipe_wires name w =
+  let wires = Array.init 5 ~f:(fun i -> Signal.(wire w -- (stage_names.(i) ^ "." ^ name))) in
   (fun s -> wires.(stage_index s))
 
 
@@ -98,14 +103,14 @@ let cpu (inputs: Signal.t I.t) =
   let forward_pipeline ~signal ~stage ?default = forward_pipeline ~signal ~stage ~stall ~bubble ?default ~regspec in
 
   (* Fetch stage *)
-  let next_pc = wire 32 in
-  let pc_reg = reg regspec ~enable:vdd next_pc in
+  let next_pc = wire 32 -- "next_pc" in
+  let pc_reg = reg regspec ~enable:vdd next_pc -- "pcreg" in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F in
-  let insn = forward_pipeline ~signal:inputs.insn ~stage:F ~default:(of_hex ~width:32 "00000013") in
-  let is_insn = forward_pipeline ~signal:vdd ~stage:F in (* for tracking commits *)
+  let insn = forward_pipeline ~signal:(inputs.insn -- "insn") ~stage:F ~default:(of_hex ~width:32 "00000013") in
+  let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F in (* for tracking commits *)
   (* Next PC calculation. increment by 1 unless we are branching *)
-  let branch_pc = wire 32 in
-  next_pc <== mux2 branch_execute branch_pc (pc_reg +:. 1);
+  let branch_pc = wire 32 -- "branch_pc" in
+  next_pc <== mux2 branch_execute branch_pc (pc_reg +:. 4);
 
   (* Decode *)
   let decoded = Decode.decode (insn D) in
@@ -125,7 +130,7 @@ let cpu (inputs: Signal.t I.t) =
   let rsvals = Array.map ~f:(fun v -> forward_pipeline ~signal:v ~stage:D) regfile.rsval in
 
   (* Create wires for bypassed sources and written destination *)
-  let rs1val = pipe_wires 32 and rs2val = pipe_wires 32 and rdval = pipe_wires 32 in
+  let rs1val = pipe_wires "rs1val" 32 and rs2val = pipe_wires "rs2val" 32 and rdval = pipe_wires "rdval" 32 in
 
   (* Place decoded values into pipeline *)
   let opcode = forward_pipeline ~signal:decoded.opcode ~stage:D

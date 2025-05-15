@@ -26,5 +26,5 @@ let print_outputs cpu =
 let _ = for _ = 0 to 10 do
   Sim.Cpu.cycle sim_cpu sim_mem;
   print_outputs sim_cpu;
-  Stdio.printf "%d\n" (Int32.to_int_exn (Sim.Cpu.regs sim_cpu).(2))
+  Stdio.printf "%d\n" (Int32.to_int_exn (Sim.Cpu.regs sim_cpu).(1))
 done

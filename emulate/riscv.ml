@@ -3,10 +3,11 @@
 open! Base
 
 (* A register *)
-type reg = int
+type reg = int [@@deriving equal]
 
 (* Signed or unsigned *)
 type signedness = Signed | Unsigned
+  [@@deriving equal]
 
 (* Type of integer ALU operation (immediate or register) *)
 type aluop =
@@ -16,18 +17,18 @@ type aluop =
 
 (* Type of branch *)
 type branchop =
-  | Eq | Neq | Lt of signedness | Ge of signedness
+  | Eq | Neq | Lt of signedness | Ge of signedness [@@deriving equal]
 (* Size of a memory op *)
-type memsize = Byte | Half | Word
+type memsize = Byte | Half | Word [@@deriving equal]
 
 (* The registers (2 in 1 out) specified by an R-type instruction *)
-type regs21 = { rd: reg; rs1: reg; rs2: reg }
+type regs21 = { rd: reg; rs1: reg; rs2: reg } [@@deriving equal]
 (* Registers (1 in 1 out) and immediate specified by an I-type instruction *)
-type regs11 = { rd: reg; rs1: reg; imm: int32 }
+type regs11 = { rd: reg; rs1: reg; imm: int32 } [@@deriving equal]
 (* Registers (2 in 0 out) and immediate for B-type or S-type instructions *)
-type regs20 = { rs1: reg; rs2: reg; imm: int32 }
+type regs20 = { rs1: reg; rs2: reg; imm: int32 } [@@deriving equal]
 (* Registers (0 in 1 out) and immediate for U-type or J-type instructions *)
-type regs01 = { rd: reg; imm: int32 }
+type regs01 = { rd: reg; imm: int32 } [@@deriving equal]
 
 type insn =
   | IntReg of aluop * regs21
@@ -40,6 +41,7 @@ type insn =
   | Lui of regs01
   | AuiPc of regs01
   | Env (* TODO: ecall vs ebreak *)
+  [@@deriving equal]
 
 (* Nop = addi $0, $0, 0 *)
 let nop = IntImm (Add, { rd = 0; rs1 = 0; imm = Int32.zero })
@@ -75,7 +77,7 @@ end
 (* Int32 helpers *)
 (* Extract bit range from `min` to `max` (inclusive, zero-indexed) from an int32 as an int *)
 let bits insn max min = Int32.to_int_exn
-  (Int32.(land) (Int32.(lsr) insn min) (Int32.of_int_exn (2 ** (max-min+1))))
+  (Int32.(land) (Int32.(lsr) insn min) (Int32.of_int_exn (2 ** (max-min+1) - 1)))
 (* Sign-extend an int with the given number of bits to an int32 *)
 let of_int_sign ~w value = Int32.(asr) (Int32.(lsl) (Int32.of_int_exn value) (32 - w)) (32 - w)
 
@@ -193,5 +195,20 @@ let to_int32 =
   | Env -> Binary.Op.env
 
 
-(* Check nop translation *)
-let%test "nop_binary" = Int32.(=) (Int32.of_string "0x13") (to_int32 nop)
+(* Test bits *)
+let%test "bits 1" = bits Int32.(of_string "0x00708093") 6 0 = 19
+let%test "bits 2" = bits Int32.(of_string "0x00012980") 6 0 = 0
+
+(* Check some basic translation *)
+let%test "binary nop" = Int32.(=) (Int32.of_string "0x13") (to_int32 nop)
+let%test "binary basic addi" = Int32.(=)
+                              (Int32.of_string "0x00700093")
+                              (to_int32 (IntImm (Add, {rd = 1; rs1 = 0; imm = Int32.of_int_exn 7})))
+
+(* Check round-trips *)
+let roundtrip insn = equal_insn (of_int32_exn (to_int32 insn)) insn
+let roundtrip_bin b = Int32.(=) (to_int32 (of_int32_exn b)) b
+
+let%test "roundtrip nop" = roundtrip nop
+let%test "roundtrip basic addi" = roundtrip (IntImm (Add, {rd = 1; rs1 = 1; imm = Int32.of_int_exn 12}))
+let%test "roundtrip basic add" = roundtrip (IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1}))

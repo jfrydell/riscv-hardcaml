@@ -14,8 +14,8 @@ let load ~memory ~addr ~size ~extend =
   (* Load necessary number of bytes *)
   let load_byte addr = Hashtbl.find memory addr |> Option.value ~default:0 in
   let bytes = List.init size ~f:(fun n -> load_byte Int32.(addr + of_int_exn n)) in
-  (* Build zero-extended literal *)
-  let value = List.fold bytes ~init:0 ~f:(fun v b -> 8*v + b) |> Int32.of_int_trunc in
+  (* Build zero-extended (little-endian) literal *)
+  let value = List.fold_right bytes ~init:0 ~f:(fun b v -> 256*v + b) |> Int32.of_int_trunc in
   (* Sign-extend if necessary *)
   match extend with
   | Riscv.Signed -> Int32.shift_right (Int32.shift_left value (8*size)) (8*size)
