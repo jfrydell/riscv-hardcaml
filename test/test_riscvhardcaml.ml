@@ -74,18 +74,28 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
       failwith "mismatch between emulator and simulation"
     );
   done;
-  (* TODO: flush remaining insns in sim? actually no, issue is in other direction *)
-  if not (Hashtbl.is_empty (Hashtbl.merge emulator.memory sim_mem ~f:(fun ~key -> function
-    | `Both (a,b) -> if a <> b then Some key else None
-    | `Left a -> if a <> 0 then Some key else None
-    | `Right b -> if 0 <> b then Some key else None
-  ))) then
+  (* HACK: if next instruction in emulator is a store, execute it, as CPU will already have done it because pipelining. *)
+  let bonus_insn = Riscvemulate.load ~memory:emulator.memory ~addr:!(emulator.pc) ~size:4 ~extend:Unsigned in
+  match Riscvemulate.of_int32_exn bonus_insn with
+  | Store _ ->
+      Stdio.printf "\nExecuting bonus store because it's in the pipeline\n";
+      Riscvemulate.step emulator;
+  | _ -> ();
+  (* Compare memory contents *)
+  let mem_diff = Hashtbl.merge emulator.memory sim_mem ~f:(fun ~key -> function
+    | `Both (a,b) -> if a <> b then Some (key, a, b) else None
+    | `Left a -> if a <> 0 then Some (key, a, 0) else None
+    | `Right b -> if 0 <> b then Some (key, 0, b) else None
+  ) in
+  if not (Hashtbl.is_empty mem_diff) then (
+    Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 [%sexp_of: int32 * int * int] mem_diff);
     failwith "memory different at end"
+  )
 
 (* First run small tests for debuggability: 100 tests of 2 instructions each *)
-let _ = for i = 1 to 100 do
+let _ = for i = 1 to 1000 do
   Stdio.printf "\n\n\n= Running small test %d =" i;
   Random.init i;
   (* mem_range being small risks stores overwriting instructions, which causes emulator mismatch if within pipeline already *)
-  compare_emulator ~insn_count:2 ~mem_range:Int32.(of_int_exn 1000, of_int_exn 1024) ~reg_max:8
+  compare_emulator ~insn_count:3 ~mem_range:Int32.(of_int_exn 1000, of_int_exn 1024) ~reg_max:8
 done

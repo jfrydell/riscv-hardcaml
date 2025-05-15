@@ -8,6 +8,7 @@ module I = struct
     { clock: 'a
     ; reset: 'a
     ; insn: 'a [@bits 32]
+    ; insn_valid: 'a
     ; data: 'a [@bits 32]
     }
   [@@deriving hardcaml]
@@ -92,7 +93,8 @@ let cpu (inputs: Signal.t I.t) =
   (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
   let stall_decode = wire 1 -- "stall decode" in
   let stall = function
-    | F | D -> stall_decode
+    | F -> stall_decode |: ~:(inputs.insn_valid)
+    | D -> stall_decode
     | X | M | W -> gnd in
   (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
   let branch_execute = wire 1 -- "branch from execute" in
@@ -104,7 +106,7 @@ let cpu (inputs: Signal.t I.t) =
 
   (* Fetch stage *)
   let next_pc = wire 32 -- "next_pc" in
-  let pc_reg = reg regspec ~enable:vdd next_pc -- "pcreg" in
+  let pc_reg = reg regspec ~enable:(~: (stall F)) next_pc -- "pcreg" in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F in
   let insn = forward_pipeline ~signal:(inputs.insn -- "insn") ~stage:F ~default:(of_hex ~width:32 "00000013") in
   let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F in (* for tracking commits *)
@@ -126,11 +128,11 @@ let cpu (inputs: Signal.t I.t) =
     clock = inputs.clock;
     reset = inputs.reset; (* WARN/TODO: unused in current implementation *)
   } in
-  (* `rsvals` = unbypassed register values from register file *)
-  let rsvals = Array.map ~f:(fun v -> forward_pipeline ~signal:v ~stage:D) regfile.rsval in
 
   (* Create wires for bypassed sources and written destination *)
   let rs1val = pipe_wires "rs1val" 32 and rs2val = pipe_wires "rs2val" 32 and rdval = pipe_wires "rdval" 32 in
+  rs1val D <== regfile.rsval.(0);
+  rs2val D <== regfile.rsval.(1);
 
   (* Place decoded values into pipeline *)
   let opcode = forward_pipeline ~signal:decoded.opcode ~stage:D
@@ -225,12 +227,14 @@ let cpu (inputs: Signal.t I.t) =
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
   (rs1val X) <== mux2 ((rs1 X ==: rd M) &: (rs1 X <>: zero 5) -- "bypassMX1") (rdval M) (
                   mux2 ((rs1 X ==: rd W) &: (rs1 X <>: zero 5) -- "bypassWX1") (rdval W) (
-                  rsvals.(0) X));
+                  forward_pipeline ~signal:(rs1val D) ~stage:D X));
   (rs2val X) <== mux2 ((rs2 X ==: rd M) &: (rs2 X <>: zero 5) -- "bypassMX2") (rdval M) (
                   mux2 ((rs2 X ==: rd W) &: (rs2 X <>: zero 5) -- "bypassWX2") (rdval W) (
-                  rsvals.(1) X));
+                  forward_pipeline ~signal:(rs2val D) ~stage:D X));
   (* for store data *)
-  (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5) -- "bypassWM2") (rdval W) (rsvals.(1) M);
+  (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5) -- "bypassWM2")
+                      (rdval W)
+                      (forward_pipeline ~signal:(rs2val X) ~stage:X M);
 
 
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)

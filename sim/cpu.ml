@@ -10,15 +10,16 @@ let create ?config:(config=Cyclesim.Config.trace `All_named) () =
   Cyclesim.cycle_before_clock_edge cpu;
   cpu
 
-(* Run a cycle of simulation, feeding in correct insn/memory values & updating memory on store before cycling CPU.
-Assumes current outputs reflect state of registers, so no need to `cycle_after_clock_edge`. *)
-let cycle (cpu: Sim.t) memory =
+(* Processes CPU outputs (pc & data access), updating memory and feeding in correct inputs (insn & load data).
+Should be called before a `Cyclesim.cycle`. *)
+let cycle_external (cpu: Sim.t) memory =
   let inputs = Cyclesim.inputs cpu
   and outputs = Cyclesim.outputs cpu in
 
   (* Fetch instruction from memory, or use provided custom `insn` getter *)
   let insn = Riscvemulate.load ~memory ~addr:(Bits.to_int32 !(outputs.pc)) ~size:4 ~extend:Riscvemulate.Unsigned in
   inputs.insn := Bits.of_int32 ~width:32 insn;
+  inputs.insn_valid := Bits.vdd;
   (* DEBUG *)
   (* Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
 
@@ -30,10 +31,7 @@ let cycle (cpu: Sim.t) memory =
 
   (* Process store *)
   if Bits.to_bool !(outputs.access.store) && Bits.to_bool !(outputs.access.valid) then
-    Riscvemulate.store ~memory ~addr ~size ~value:(Bits.to_int32 !(outputs.access.store_data));
-
-  (* Run standard cycle, propagating inputs, updating regs, and propagating outputs *)
-  Cyclesim.cycle cpu
+    Riscvemulate.store ~memory ~addr ~size ~value:(Bits.to_int32 !(outputs.access.store_data))
 
 (* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 5 cycles.
 Runs the given function prior to each cycle (for example, to inject instructions at PC for hacky testing) *)
@@ -41,11 +39,20 @@ let cycle_insn ?f:(cycle_fn = fun _ -> ()) (cpu: Sim.t) memory =
   match List.range 0 5 |> List.find ~f:(fun _ ->
     cycle_fn ();
     let committed = Bits.to_bool !((Cyclesim.outputs cpu).will_commit) in
-    cycle cpu memory;
+    cycle_external cpu memory;
+    Cyclesim.cycle cpu;
     committed
   ) with
   | Some _cycle -> ()
   | None -> failwith "CPU didn't report instruction commit for 5 cycles"
+
+(* Flushes any instructions still in the CPU without updating state *)
+let flush cpu memory =
+  for _ = 1 to 5 do
+    cycle_external cpu memory;
+    (Cyclesim.inputs cpu).insn_valid := Bits.gnd;
+    Cyclesim.cycle cpu
+  done
 
 (* Extract all register values from the simulation *)
 let regs (cpu: Sim.t) =
