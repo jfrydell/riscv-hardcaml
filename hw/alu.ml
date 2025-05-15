@@ -18,11 +18,11 @@ Could expand to other operations by requiring some x's to be 0s (wouldn't affect
 let alu src1 src2 optype =
   let open Signal in
 
-  let op3 = optype.:[3,1] and op1 = optype.:(0) in
+  let op3 = optype.:[3,1] -- "ALU op3" and op1 = optype.:(0) -- "ALU op1" in
 
   (* Adder; subtractor if sub (via op1 since sra doesn't use) or slt(u) *)
-  let add_in_2 = mux2 (op1 |: (op3 ==: of_string "3'h2") |: (op3 ==: of_string "3'h3")) (negate src1) src2 in
-  let rel_add = src1 +: add_in_2 in
+  let add_in_2 = mux2 (op1 |: (op3 ==: of_string "3'h2") |: (op3 ==: of_string "3'h3")) (negate src1) src2 -- "ALU add in 2" in
+  let rel_add = src1 +: add_in_2 -- "ALU add result" in
 
   (* Logic functions *)
   let rel_and = src1 &: src2

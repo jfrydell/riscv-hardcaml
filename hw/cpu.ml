@@ -38,7 +38,7 @@ end
 type stage = F | D | X | M | W
 let stage_index = function F -> 0 | D -> 1 | X -> 2 | M -> 3 | W -> 4
 let index_stage = function 0 -> F | 1 -> D | 2 -> X | 3 -> M | 4 -> W | _ -> failwith "invalid stage"
-let stage_names = [|"F"; "D"; "X"; "M"; "W"|]
+let stage_names = [|"F"; "D"; "EX"; "M"; "W"|] (* EF for (approximate) alphabetical order (fetch doesn't matter much) *)
 
 type pipe_signal = stage -> Signal.t
 
@@ -61,7 +61,7 @@ let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero
     else if si = (stage_index stage) then signal
     else let prev = get_memo (si-1) in Signal.(
       let s = reg regspec ~enable:(~: (stall (index_stage si))) (mux2 (bubble (index_stage si)) default prev) in
-      (* Stdio.printf "%d: " si;
+      (* Stdio.printf "%d: " si; (* TODO why all the duplicate signals? *)
       Stdio.print_s (sexp_of_list sexp_of_string (names signal)); *)
       set_names s (List.map (names signal) ~f:(fun n -> stage_names.(si) ^ "." ^ n));
       s
@@ -145,10 +145,10 @@ let cpu (inputs: Signal.t I.t) =
   (* First operands is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let src1x = mux2
                 ((opcode X ==: Riscv.Op.branch) |: (opcode X ==: Riscv.Op.jal) |: (opcode X ==: Riscv.Op.auiPc))
-                (pc X) (rs1val X) in
+                (pc X) (rs1val X) -- "EX ALU src1" in
   let src2x = mux2
                 ((opcode X ==: Riscv.Op.intR) |: (opcode X ==: Riscv.Op.branch))
-                (rs2val X) (imm X) in
+                (rs2val X) (imm X) -- "EX ALU src2" in
   (* ALU optype selection based on opcode (TODO: lift to previous stage for timing probably) *)
   let optype = priority_select_with_default [
     (* R-type: funct3 with add/sub and sra/srl determined by funct7 being 0x20 *)
@@ -158,9 +158,9 @@ let cpu (inputs: Signal.t I.t) =
     { valid = (opcode X) ==: Riscv.Op.intI;
       value = (funct3 X) @: ((funct3 X ==: of_string "3'b101") &: ((imm X).:[11,5] ==: of_string "7'h20")) };
   ] (* Otherwise (load, store, branch, jal(r), lui, luipc): just add *)
-    ~default:(of_bit_string "0000") in
+    ~default:(of_bit_string "0000") -- "EX optype" in
   (* ALU *)
-  let alu_result = Alu.alu src1x src2x optype in
+  let alu_result = Alu.alu src1x src2x optype -- "EX ALU result" in
 
   (* Branches *)
   (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)

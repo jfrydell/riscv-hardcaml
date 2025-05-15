@@ -42,11 +42,11 @@ let decode insn = let open Signal in
 
   (* Construct result *)
   {
-    opcode;
-    rs1 = mux2 regmask.:(2) rs1 (zero 5);
-    rs2 = mux2 regmask.:(1) rs2 (zero 5);
-    rd = mux2 regmask.:(0) rd (zero 5);
-    funct3 = insn.:[14,12];
-    funct7 = insn.:[31,25];
-    imm
+    opcode = opcode -- "opcode";
+    rs1 = mux2 regmask.:(2) rs1 (zero 5) -- "rs1";
+    rs2 = mux2 regmask.:(1) rs2 (zero 5) -- "rs2";
+    rd = mux2 regmask.:(0) rd (zero 5) -- "rd";
+    funct3 = insn.:[14,12] -- "funct3";
+    funct7 = insn.:[31,25] -- "funct7";
+    imm = imm -- "imm";
   }

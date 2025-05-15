@@ -17,14 +17,13 @@ let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero
 let sim_cpu = Sim.Cpu.create ()
 let sim_mem = Hashtbl.copy emulator.memory
 
-(* Simulation testing *)
-let print_outputs cpu =
-  Stdio.print_s (
-    Riscvhardcaml.Cpu.O.sexp_of_t (fun b -> sexp_of_int (Bits.to_int !b)) (Cyclesim.outputs cpu)
-  )
-
+(* Run for 10 cycles *)
 let _ = for _ = 0 to 10 do
   Sim.Cpu.cycle sim_cpu sim_mem;
-  print_outputs sim_cpu;
+  (* Print outputs *)
+  Stdio.print_s (
+    Riscvhardcaml.Cpu.O.sexp_of_t (fun b -> sexp_of_int (Bits.to_int !b)) (Cyclesim.outputs cpu)
+  );
+  (* Print reg *)
   Stdio.printf "%d\n" (Int32.to_int_exn (Sim.Cpu.regs sim_cpu).(1))
 done
