@@ -33,14 +33,14 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
 
   (* Run *)
   for i = 0 to insn_count do
-    Stdio.printf "\n\nksldjglkjdkj %d\n" i;
+    Stdio.printf "\n\n== CYCLE %d ==\n" i;
     (* Step simulator and emulator *)
     (try
       (* Each cycle, inject instruction at simulator's PC (due to pipelining, simulator PC runs ahead of emulation) *)
       Sim.Cpu.cycle_insn ~f:(fun _ ->
         let new_insn = Riscvemulate.Random.instruction ~mem_range ~reg_max () in
         Stdio.printf "writing "; Stdio.print_s (Riscvemulate.sexp_of_insn new_insn);
-        Stdio.printf "(bin %08x) to PC %d\n" (Riscvemulate.to_int32 new_insn |> Int32.to_int_exn) (Int32.to_int_exn (Sim.Cpu.pc sim_cpu));
+        Stdio.printf "(binary: %08x) to PC %d\n" (Riscvemulate.to_int32 new_insn |> Int32.to_int_exn) (Int32.to_int_exn (Sim.Cpu.pc sim_cpu));
         (* Injection happens for both simulator and emulator, while simulator fetch runs ahead. Fine as long as
         no code modifies instructions in near (couple cycle) future, which is definitely possible so TODO fix this. *)
         List.iter [sim_mem; emulator.memory] ~f:(fun memory ->

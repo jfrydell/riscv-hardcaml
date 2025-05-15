@@ -57,7 +57,10 @@ let step {regs; pc; memory} =
   and mem_size = function Riscv.Word -> 4 | Riscv.Half -> 2 | Riscv.Byte -> 1
   in
 
-  (* Main interpreter *)
+  (* Increment PC (separate next computation from actual update to avoid PC-using insn mistakes) *)
+  let next_pc = ref Int32.(!pc + of_int_exn 4) in
+
+  (* Instruction dispatch *)
   (match insn with
     | IntReg (op, {rd; rs1; rs2}) -> alu rd rs1 regs.(rs2) op
     | IntImm (op, {rd; rs1; imm}) -> alu rd rs1 imm op
@@ -74,12 +77,14 @@ let step {regs; pc; memory} =
         | Lt Unsigned -> less_than_unsigned s1 s2
         | Ge Signed -> Int32.(s1 >= s2)
         | Ge Unsigned -> not (less_than_unsigned s1 s2)
-        ) then pc := Int32.(!pc + imm)
-    | Jal {rd; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; pc := !pc + imm)
-    | Jalr {rd; rs1; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; pc := regs.(rs1) + imm)
+        ) then next_pc := Int32.(!pc + imm)
+    | Jal {rd; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; next_pc := !pc + imm)
+    | Jalr {rd; rs1; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; next_pc := regs.(rs1) + imm)
     | Lui {rd; imm} -> regs.(rd) <- imm
     | AuiPc {rd; imm} -> Int32.(regs.(rd) <- !pc + imm)
     | Env -> failwith "Env call"
   );
   (* Preserve r0 *)
-  regs.(0) <- Int32.zero
+  regs.(0) <- Int32.zero;
+  (* Update PC *)
+  pc := !next_pc;

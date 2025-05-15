@@ -20,7 +20,7 @@ let cycle (cpu: Sim.t) memory =
   let insn = Riscvemulate.load ~memory ~addr:(Bits.to_int32 !(outputs.pc)) ~size:4 ~extend:Riscvemulate.Unsigned in
   inputs.insn := Bits.of_int32 ~width:32 insn;
   (* DEBUG *)
-  Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn));
+  (* Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
 
   (* Process load *)
   let addr = Bits.to_int32 !(outputs.access.addr)
