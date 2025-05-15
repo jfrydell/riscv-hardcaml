@@ -78,8 +78,8 @@ let step {regs; pc; memory} =
         | Ge Signed -> Int32.(s1 >= s2)
         | Ge Unsigned -> not (less_than_unsigned s1 s2)
         ) then next_pc := Int32.(!pc + imm)
-    | Jal {rd; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; next_pc := !pc + imm)
-    | Jalr {rd; rs1; imm} -> Int32.(regs.(rd) <- !pc + of_int_exn 4; next_pc := regs.(rs1) + imm)
+    | Jal {rd; imm} -> Int32.(next_pc := !pc + imm; regs.(rd) <- !pc + of_int_exn 4)
+    | Jalr {rd; rs1; imm} -> Int32.(next_pc := regs.(rs1) + imm; regs.(rd) <- !pc + of_int_exn 4; ) (* Be sure to read reg before writing! *)
     | Lui {rd; imm} -> regs.(rd) <- imm
     | AuiPc {rd; imm} -> Int32.(regs.(rd) <- !pc + imm)
     | Env -> failwith "Env call"
