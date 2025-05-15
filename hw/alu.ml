@@ -28,7 +28,7 @@ let alu src1 src2 optype =
   let rel_and = src1 &: src2
   and rel_or = src1 |: src2
   and rel_xor = src1 ^: src2
-  and rel_sll = log_shift sll src2 src2.:[4,0]
+  and rel_sll = log_shift sll src1 src2.:[4,0]
   and rel_srl = log_shift srl src1 src2.:[4,0]
   and rel_sra = log_shift sra src1 src2.:[4,0] in
 

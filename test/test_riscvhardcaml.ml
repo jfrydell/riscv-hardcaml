@@ -30,32 +30,42 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
   let emulator = Riscvemulate.blank in
   let sim_cpu = Sim.Cpu.create () in
   let sim_mem = Hashtbl.copy emulator.memory in
+  let debug = true in
 
   (* Run *)
   for i = 0 to insn_count do
     Stdio.printf "\n\n== CYCLE %d ==\n" i;
-    (* Step simulator and emulator *)
-    (try
-      (* Each cycle, inject instruction at simulator's PC (due to pipelining, simulator PC runs ahead of emulation) *)
-      Sim.Cpu.cycle_insn ~f:(fun _ ->
-        let new_insn = Riscvemulate.Random.instruction ~mem_range ~reg_max () in
-        Stdio.printf "writing "; Stdio.print_s (Riscvemulate.sexp_of_insn new_insn);
-        Stdio.printf "(binary: %08x) to PC %d\n" (Riscvemulate.to_int32 new_insn |> Int32.to_int_exn) (Int32.to_int_exn (Sim.Cpu.pc sim_cpu));
-        (* Injection happens for both simulator and emulator, while simulator fetch runs ahead. Fine as long as
-        no code modifies instructions in near (couple cycle) future, which is definitely possible so TODO fix this. *)
-        List.iter [sim_mem; emulator.memory] ~f:(fun memory ->
-          Riscvemulate.store ~memory ~addr:(Sim.Cpu.pc sim_cpu) ~size:4 ~value:(Riscvemulate.to_int32 new_insn)
-        );
-      ) sim_cpu sim_mem;
-      (* And step the emulator forward an instruction as well *)
-      Riscvemulate.step emulator
-    with
-      | err -> Stdio.print_s (Riscvemulate.sexp_of_insn (Riscvemulate.current_pc_insn emulator)); raise err
+
+    (* Run simulator, injecting instructions as it fetches (due to pipelining, simulator PC runs ahead of emulation) *)
+    Sim.Cpu.cycle_insn ~f:(fun _ ->
+      let new_insn = Riscvemulate.Random.instruction ~mem_range ~reg_max () in
+      if debug then (
+        Stdio.printf "Writing "; Stdio.print_s (Riscvemulate.sexp_of_insn new_insn);
+        Stdio.printf "(binary: %08x) to PC %d (fetched by sim)\n"
+          (Riscvemulate.to_int32 new_insn |> Int32.to_int_exn) (Int32.to_int_exn (Sim.Cpu.pc sim_cpu));
+      );
+      (* Injection happens for both simulator and emulator, while simulator fetch runs ahead. Fine as long as no
+      code modifies instructions in near (couple cycle) future, which is unlikely if for random programs are not
+      near zero (would need reg to collide with PC - mem offset); this is why we bias mem offset away from 0. *)
+      List.iter [sim_mem; emulator.memory] ~f:(fun memory ->
+        Riscvemulate.store ~memory ~addr:(Sim.Cpu.pc sim_cpu) ~size:4 ~value:(Riscvemulate.to_int32 new_insn)
+      );
+    ) sim_cpu sim_mem;
+
+    (* Output instruction we are executing this cycle for debugging *)
+    if debug then (
+      let pc = !(emulator.pc) in
+      let insn = Riscvemulate.load ~memory:emulator.memory ~addr:pc ~size:4 ~extend:Unsigned in
+      Stdio.printf "\nStepping emulator through PC %d = insn %08x\n" (Int32.to_int_exn pc) (Int32.to_int_exn insn);
+      Stdio.print_s (Riscvemulate.sexp_of_insn (Riscvemulate.current_pc_insn emulator));
     );
 
+    (* And step the emulator forward an instruction as well *)
+    Riscvemulate.step emulator;
+
+    (* Compare results *)
     if not (Array.equal Int32.equal (Sim.Cpu.regs sim_cpu) emulator.regs) then (
       Stdio.printf "Mismatch on cycle %d:\n" i;
-      Stdio.printf "Insn: "; Stdio.print_s (Riscvemulate.sexp_of_insn (Riscvemulate.current_pc_insn emulator));
       Stdio.printf "Emulator state: "; Stdio.print_s (Riscvemulate.sexp_of_state emulator);
       Stdio.printf "HW regs: "; Stdio.print_s (sexp_of_array sexp_of_int32 (Sim.Cpu.regs sim_cpu));
       Stdio.printf "HW mem: "; Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 sexp_of_int sim_mem);

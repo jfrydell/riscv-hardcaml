@@ -77,9 +77,9 @@ end
 (* Int32 helpers *)
 (* Extract bit range from `min` to `max` (inclusive, zero-indexed) from an int32 as an int *)
 let bits insn max min = Int32.to_int_exn
-  (Int32.(land) (Int32.(lsr) insn min) (Int32.of_int_exn (2 ** (max-min+1) - 1)))
+  (Int32.(land) (Int32.(lsr) insn min) (Int32.of_int_trunc (2 ** (max-min+1) - 1)))
 (* Sign-extend an int with the given number of bits to an int32 *)
-let of_int_sign ~w value = Int32.(asr) (Int32.(lsl) (Int32.of_int_exn value) (32 - w)) (32 - w)
+let of_int_sign ~w value = Int32.(asr) (Int32.(lsl) (Int32.of_int_trunc value) (32 - w)) (32 - w)
 
 (* Convert binary instruction to `insn` *)
 let of_int32_exn insn =
@@ -153,7 +153,7 @@ let of_int32_exn insn =
 
 (* Move a set of bits from an int32 to another location within the int32 *)
 let move_bits value max_ min_ loc =
-  let mask = Int32.of_int_exn (2 ** (max_ - min_ + 1) - 1) in
+  let mask = Int32.of_int_trunc (2 ** (max_ - min_ + 1) - 1) in
   Int32.(((value lsr min_) land mask) lsl loc)
 
 (* Convert `insn` to binary *)

@@ -28,7 +28,7 @@ let branchop () = Riscv.(
 (small range should make hazards more common) *)
 let instruction ~mem_range:(memmin, memmax) ?reg_max:(reg_max = 32) () =
   let reg () = Random.int reg_max in
-  let imm maxbit minbit = Int32.(lsl) (Random.int32 (Int.pow 2 (maxbit-minbit+1) |> Int32.of_int_exn)) minbit in
+  let imm maxbit minbit = Int32.(lsl) (Random.int32 (Int.pow 2 (maxbit-minbit+1) |> Int32.of_int_trunc)) minbit in
   let addr () = Random.int32_incl memmin memmax in
   match Random.int 9 with
   | 0 -> Riscv.IntReg (aluop ~subenabled:true (), {rd = reg (); rs1 = reg (); rs2 = reg ()})
