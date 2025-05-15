@@ -1,3 +1,4 @@
 (test
  (name test_riscvhardcaml)
- (libraries base hardcaml riscvhardcaml riscvemulate sim))
+ (libraries base hardcaml riscvhardcaml riscvemulate sim)
+ (preprocess (pps ppx_jane)))

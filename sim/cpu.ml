@@ -20,7 +20,7 @@ let cycle (cpu: Sim.t) memory =
   let insn = Riscvemulate.load ~memory ~addr:(Bits.to_int32 !(outputs.pc)) ~size:4 ~extend:Riscvemulate.Unsigned in
   inputs.insn := Bits.of_int32 ~width:32 insn;
   (* DEBUG *)
-  Stdio.printf "PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn));
+  (* Stdio.printf "PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
 
   (* Process load *)
   let addr = Bits.to_int32 !(outputs.access.addr)
@@ -37,11 +37,13 @@ let cycle (cpu: Sim.t) memory =
 
 (* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 5 cycles. *)
 let cycle_insn (cpu: Sim.t) memory =
-  List.range 0 5 |> List.find ~f:(fun _ ->
+  match List.range 0 5 |> List.find ~f:(fun _ ->
     let committed = Bits.to_bool !((Cyclesim.outputs cpu).will_commit) in
     cycle cpu memory;
     committed
-  )
+  ) with
+  | Some _cycle -> ()
+  | None -> failwith "CPU didn't report instruction commit for 5 cycles"
 
 (* Extract all register values from the simulation *)
 let regs (cpu: Sim.t) =
