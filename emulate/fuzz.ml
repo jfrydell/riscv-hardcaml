@@ -32,7 +32,10 @@ let instruction ~mem_range:(memmin, memmax) ?reg_max:(reg_max = 32) () =
   let addr () = Random.int32_incl memmin memmax in
   match Random.int 9 with
   | 0 -> Riscv.IntReg (aluop ~subenabled:true (), {rd = reg (); rs1 = reg (); rs2 = reg ()})
-  | 1 -> Riscv.IntImm (aluop ~subenabled:false (), {rd = reg (); rs1 = reg (); imm = imm 11 0})
+  | 1 -> let aluop = aluop ~subenabled:false () in
+          Riscv.IntImm (aluop, {rd = reg (); rs1 = reg ();
+            imm = match aluop with Sll | Srl | Sra -> imm 4 0 | _ -> imm 11 0
+          })
   | 2 -> Riscv.Load (memsize (), sign (), {rd = reg (); rs1 = reg (); imm = addr ()})
   | 3 -> Riscv.Store (memsize (), {rs1 = reg (); rs2 = reg (); imm = addr ()})
   | 4 -> Riscv.Branch (branchop (), {rs1 = reg (); rs2 = reg (); imm = imm 12 1})

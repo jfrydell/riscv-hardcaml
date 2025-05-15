@@ -1,17 +1,20 @@
 open! Base
 open Hardcaml
 
-let circuit =
+(* let circuit =
   let open Riscvhardcaml in
   Circuit.create_with_interface (module Cpu.I) (module Cpu.O) ~name:"cpu" Cpu.cpu
 
-let () = Rtl.print Verilog circuit
+let () = Rtl.print Verilog circuit *)
 
 (* Debug with waveform *)
 let program = Riscvemulate.[
-  IntImm (Add, {rd = 1; rs1 = 0; imm = Int32.of_int_exn 7});
-  IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1});
-  IntImm (Sll, {rd = 2; rs1 = 5; imm = Int32.of_int_exn (-367)}); (* weird bug *)
+  AuiPc {rd = 6; imm = Int32.of_int_trunc 2143752192};
+  Load (Byte, Unsigned, {rd = 3; rs1 = 2; imm = Int32.of_int_trunc 1021});
+  IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 2705});
+  Branch (Eq, {rs1 = 6; rs2 = 3; imm = Int32.of_int_trunc 2768}); (* Shouldn't branch *)
+  Store (Half, {rs1 = 3; rs2 = 4; imm = Int32.of_int_trunc 1016});
+  Branch (Ge Signed, {rs1 = 5; rs2 = 0; imm = Int32.of_int_trunc 4008});
   nop;
   nop;
   nop;

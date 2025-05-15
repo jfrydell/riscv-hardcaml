@@ -105,14 +105,13 @@ let of_int32_exn insn =
       { rd; rs1; rs2 }
     )
   else if opcode = (Int32.to_int_exn Binary.Op.intI) then
-    IntImm (
-      (match Binary.Funct3.aluop.(funct3) with
-        | Srl when funct7 = 0x20 -> Sra
-        | op -> op),
-      {
-        rd; rs1; imm = immi;
-      }
-    )
+    let op, mask = match Binary.Funct3.aluop.(funct3) with
+        | Sll -> Sll, 0x1f (* Shifts only take 5 imm bits *)
+        | Srl when funct7 = 0x20 -> Sra, 0x1f
+        | Srl -> Srl, 0x1f
+        | op -> op, 0xfff
+    in
+    IntImm (op, {rd; rs1; imm = Int32.(immi land of_int_exn mask)})
   else let mem_size () = match bits insn 13 12 with
       | 0 -> Byte
       | 1 -> Half
@@ -170,7 +169,7 @@ let to_int32 =
   let aluop op =
     let op, extra = match op with
       | Sub -> Add, Int32.(of_int_exn 0x20 lsl 25)
-      | Sra -> Sll, Int32.(of_int_exn 0x20 lsl 25)
+      | Sra -> Srl, Int32.(of_int_exn 0x20 lsl 25)
       | op -> op, Int32.zero in
     let opbits, _ = Option.value_exn (Array.findi Binary.Funct3.aluop
       ~f:(fun _ o -> equal_aluop o op)) in
@@ -217,8 +216,9 @@ let%test "roundtrip basic addi" = roundtrip (IntImm (Add, {rd = 1; rs1 = 1; imm 
 let%test "roundtrip basic add" = roundtrip (IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1}))
 let%test "roundtrip sw" = roundtrip (Store (Word, {rs1 = 2; rs2 = 7; imm = Int32.of_int_exn 2}))
 let%test "roundtrip auipc" = roundtrip (AuiPc {rd = 6; imm = Int32.of_int_exn 2143752192})
+let%test "roundtrip sra" = roundtrip (IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31}))
 
-(* let failing_insn = (AuiPc {rd = 6; imm = Int32.of_int_exn 2143752192})
+(* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31})
 let _ = Stdio.printf "Original sexp:  "; Stdio.print_s (sexp_of_insn failing_insn)
 let _ = Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (to_int32 failing_insn))
 let _ = Stdio.printf "Roundtrip sexp: "; Stdio.print_s (sexp_of_insn (of_int32_exn (to_int32 failing_insn))) *)
