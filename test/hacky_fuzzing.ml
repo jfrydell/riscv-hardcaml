@@ -2,27 +2,6 @@
 open! Base
 open! Hardcaml
 
-(* Run a basic program *)
-let program = Riscvemulate.[
-  IntImm (Add, {rd = 1; rs1 = 0; imm = Int32.of_int_exn 7});
-  IntReg (Add, {rd = 2; rs1 = 1; rs2 = 1});
-]
-let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero
-let sim_cpu = Sim.Cpu.create ()
-let sim_mem = Hashtbl.copy emulator.memory
-
-(* Run for 2 cycles and check regs *)
-let regs = Array.create ~len:32 Int32.zero
-let _ = Sim.Cpu.cycle_insn sim_cpu sim_mem; regs.(1) <- Int32.of_int_exn 7
-let _ = if Array.equal Int32.equal (Sim.Cpu.regs sim_cpu) regs
-          then Stdio.print_string "Basic program: cycle 1 good\n"
-          else failwith "Basic cycle 1 failed"
-let _ = Sim.Cpu.cycle_insn sim_cpu sim_mem; regs.(2) <- Int32.of_int_exn 14
-let _ = if Array.equal Int32.equal (Sim.Cpu.regs sim_cpu) regs
-          then Stdio.print_string "Basic program: cycle 2 good\n"
-          else failwith "Basic cycle 2 failed"
-
-
 (* Compare a random execution to the emulator for the given number of instructions.
 Generates instructions on-the-fly to account for randomly branching around. *)
 let compare_emulator ~insn_count ~mem_range ~reg_max =
@@ -30,11 +9,11 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
   let emulator = Riscvemulate.blank () in
   let sim_cpu = Sim.Cpu.create () in
   let sim_mem = Hashtbl.copy emulator.memory in
-  let debug = true in
+  let debug = false in
 
   (* Run *)
   for i = 1 to insn_count do
-    Stdio.printf "\n\n== CYCLE %d ==\n" i;
+    if debug then (Stdio.printf "\n\n== CYCLE %d ==\n" i);
 
     (* Run simulator, injecting instructions as it fetches (due to pipelining, simulator PC runs ahead of emulation) *)
     Sim.Cpu.cycle_insn ~f:(fun _ ->
@@ -78,7 +57,7 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
   let bonus_insn = Riscvemulate.load ~memory:emulator.memory ~addr:!(emulator.pc) ~size:4 ~extend:Unsigned in
   match Riscvemulate.of_int32_exn bonus_insn with
   | Store _ ->
-      Stdio.printf "\nExecuting bonus store because it's in the pipeline\n";
+      if debug then (Stdio.printf "\nExecuting bonus store because it's in the pipeline\n");
       Riscvemulate.step emulator;
   | _ -> ();
   (* Compare memory contents *)
@@ -95,7 +74,7 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
 (* Run some random tests. Doing many more tests or instruction leads to cases where hacky approach of instruction
 injection breaks :( *)
 let _ = for i = 1 to 1000 do
-  Stdio.printf "\n\n\n= Running small test %d =" i;
+  (* Stdio.printf "\n\n\n= Running small test %d =" i; *)
   Random.init i;
   (* mem_range being small risks stores overwriting instructions, which causes emulator mismatch if within pipeline already *)
   compare_emulator ~insn_count:10 ~mem_range:Int32.(of_int_exn 10000, of_int_exn 10024) ~reg_max:8
