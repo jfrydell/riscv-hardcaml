@@ -92,10 +92,11 @@ let compare_emulator ~insn_count ~mem_range ~reg_max =
     failwith "memory different at end"
   )
 
-(* First run small tests for debuggability: 100 tests of 2 instructions each *)
+(* Run some random tests. Doing many more tests or instruction leads to cases where hacky approach of instruction
+injection breaks :( *)
 let _ = for i = 1 to 1000 do
   Stdio.printf "\n\n\n= Running small test %d =" i;
   Random.init i;
   (* mem_range being small risks stores overwriting instructions, which causes emulator mismatch if within pipeline already *)
-  compare_emulator ~insn_count:3 ~mem_range:Int32.(of_int_exn 1000, of_int_exn 1024) ~reg_max:8
+  compare_emulator ~insn_count:10 ~mem_range:Int32.(of_int_exn 10000, of_int_exn 10024) ~reg_max:8
 done
