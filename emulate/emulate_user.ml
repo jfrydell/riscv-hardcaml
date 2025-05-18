@@ -19,8 +19,19 @@ let load ~memory ~addr ~size ~extend =
   let value = List.fold_right bytes ~init:0 ~f:(fun b v -> 256*v + b) |> Int32.of_int_trunc in
   (* Sign-extend if necessary *)
   match extend with
-  | Riscv.Signed -> Int32.shift_right (Int32.shift_left value (8*size)) (8*size)
+  | Riscv.Signed -> Int32.shift_right (Int32.shift_left value (32-8*size)) (32-8*size)
   | Riscv.Unsigned -> value
+
+(* Replace an implicitly-zero address not present in the hash table with an actual zero,
+making it visible that it's been accessed. Done on loads so testing logic has guarantee
+that addresses not in hash table have not yet been accessed by program. *)
+let touch ~memory ~addr ~size =
+  let touch_byte addr = Hashtbl.update memory addr ~f:(function
+    | Some b -> b
+    | None -> 0
+  ) in
+  let _ = List.init size ~f:(fun n -> touch_byte Int32.(addr + of_int_exn n))
+  in ()
 
 (* Store a value to memory *)
 let store ~memory ~addr ~value ~size =
@@ -84,7 +95,8 @@ let step {regs; pc; memory} =
     | IntReg (op, {rd; rs1; rs2}) -> alu rd rs1 regs.(rs2) op
     | IntImm (op, {rd; rs1; imm}) -> alu rd rs1 imm op
     | Load (size, sign, {rd; rs1; imm}) ->
-        regs.(rd) <- load ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~extend:sign
+        touch ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size);
+        regs.(rd) <- load ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~extend:sign;
     | Store (size, {rs1; rs2; imm}) ->
         store ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~value:regs.(rs2)
     | Branch _ -> ()

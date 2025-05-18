@@ -147,7 +147,7 @@ let of_int32_exn insn =
     AuiPc { rd; imm = immu }
   else if opcode = (Int32.to_int_exn Binary.Op.env) then
     Env
-  else failwith "illegal instruction: opcode"
+  else failwith ("illegal instruction: opcode " ^ Int.to_string opcode)
 
 
 (* Move a set of bits from an int32 to another location within the int32 *)

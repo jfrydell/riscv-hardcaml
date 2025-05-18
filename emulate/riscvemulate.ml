@@ -4,11 +4,11 @@ include Riscv
 include Emulate_user
 module Random = Fuzz
 
-(* Creates a processor state with the given memory contents (does not make a copy) *)
+(* Creates a processor state with the given initial memory contents (copied) *)
 let with_mem memory = {
   regs = Array.create ~len:32 Int32.zero;
   pc = ref Int32.zero;
-  memory
+  memory = Hashtbl.copy memory;
 }
 
 (* Create an empty processor state, with memory, PC, and regs initialized to 0 *)
