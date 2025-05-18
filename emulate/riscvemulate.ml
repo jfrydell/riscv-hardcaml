@@ -4,12 +4,15 @@ include Riscv
 include Emulate_user
 module Random = Fuzz
 
+(* Creates a processor state with the given memory contents (does not make a copy) *)
+let with_mem memory = {
+  regs = Array.create ~len:32 Int32.zero;
+  pc = ref Int32.zero;
+  memory
+}
+
 (* Create an empty processor state, with memory, PC, and regs initialized to 0 *)
-let blank () = {
-    regs = Array.create ~len:32 Int32.zero;
-    pc = ref Int32.zero;
-    memory = Hashtbl.create (module Int32);
-  }
+let blank () = with_mem (Hashtbl.create (module Int32))
 
 (* Create an initial processor state with the given program to run starting at the given address *)
 let init ~insns ~addr =

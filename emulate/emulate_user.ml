@@ -29,20 +29,39 @@ let store ~memory ~addr ~value ~size =
     Hashtbl.set memory ~key:Int32.(addr + of_int_exn b) ~data:((value lsr (8*b)) land 255)
   done
 
+(* Utility to compare two Int32s as unsigned *)
+let less_than_unsigned a b = Int32.(match is_negative a, is_negative b with
+    | true, false -> false | false, true -> true | _ -> a < b)
+
 (* Instruction at current PC *)
 let current_pc_insn {pc; memory; _} =
   let insn = load ~memory ~addr:!pc ~size:4 ~extend:Unsigned in
   (* Stdio.printf "emulate PC %d = %08x\n" (Int32.to_int_exn !pc) (Int32.to_int_exn insn); *)
   Riscv.of_int32_exn insn
 
+(* Get the next PC the emulator would reach if it were to execute the given instruction. *)
+let next_pc ~regs ~pc ~insn = match insn with
+  | Riscv.Jal {imm; _} -> Int32.(pc + imm)
+  | Jalr {imm; rs1; _} -> Int32.(regs.(rs1) + imm)
+  | Branch (brop, {rs1; rs2; imm}) ->
+      let s1 = regs.(rs1) and s2 = regs.(rs2) in
+      if (match brop with
+      | Eq -> Int32.(s1 = s2)
+      | Neq -> Int32.(s1 <> s2)
+      | Lt Signed -> Int32.(s1 < s2)
+      | Lt Unsigned -> less_than_unsigned s1 s2
+      | Ge Signed -> Int32.(s1 >= s2)
+      | Ge Unsigned -> not (less_than_unsigned s1 s2)
+      ) then Int32.(pc + imm) else Int32.(pc + of_int_exn 4)
+  | _ -> Int32.(pc + of_int_exn 4)
+
+(* Execute 1 instruction on the emulator, updating its state *)
 let step {regs; pc; memory} =
   let open Riscv in
   (* Read instruction and convert to expected format *)
   let insn = current_pc_insn {regs; pc; memory} in
 
   (* Interpeter helpers *)
-  let less_than_unsigned a b = Int32.(match is_negative a, is_negative b with
-      | true, false -> false | false, true -> true | _ -> a < b) in
   let alu rd rs1 src2 op = let src1 = regs.(rs1) in match op with
     | Add -> regs.(rd) <- Int32.(src1 + src2)
     | Sub -> regs.(rd) <- Int32.(src1 - src2)
@@ -57,8 +76,8 @@ let step {regs; pc; memory} =
   and mem_size = function Riscv.Word -> 4 | Riscv.Half -> 2 | Riscv.Byte -> 1
   in
 
-  (* Increment PC (separate next computation from actual update to avoid PC-using insn mistakes) *)
-  let next_pc = ref Int32.(!pc + of_int_exn 4) in
+  (* Calculate next PC (must happen before main computation for jalr updating same reg it reads) *)
+  let next_pc = next_pc ~regs ~pc:(!pc) ~insn in
 
   (* Instruction dispatch *)
   (match insn with
@@ -68,18 +87,9 @@ let step {regs; pc; memory} =
         regs.(rd) <- load ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~extend:sign
     | Store (size, {rs1; rs2; imm}) ->
         store ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~value:regs.(rs2)
-    | Branch (brop, {rs1; rs2; imm}) ->
-        let s1 = regs.(rs1) and s2 = regs.(rs2) in
-        if (match brop with
-        | Eq -> Int32.(s1 = s2)
-        | Neq -> Int32.(s1 <> s2)
-        | Lt Signed -> Int32.(s1 < s2)
-        | Lt Unsigned -> less_than_unsigned s1 s2
-        | Ge Signed -> Int32.(s1 >= s2)
-        | Ge Unsigned -> not (less_than_unsigned s1 s2)
-        ) then next_pc := Int32.(!pc + imm)
-    | Jal {rd; imm} -> Int32.(next_pc := !pc + imm; regs.(rd) <- !pc + of_int_exn 4)
-    | Jalr {rd; rs1; imm} -> Int32.(next_pc := regs.(rs1) + imm; regs.(rd) <- !pc + of_int_exn 4; ) (* Be sure to read reg before writing! *)
+    | Branch _ -> ()
+    | Jal {rd; _} -> Int32.(regs.(rd) <- !pc + of_int_exn 4)
+    | Jalr {rd; _} -> Int32.(regs.(rd) <- !pc + of_int_exn 4)
     | Lui {rd; imm} -> regs.(rd) <- imm
     | AuiPc {rd; imm} -> Int32.(regs.(rd) <- !pc + imm)
     | Env -> failwith "Env call"
@@ -87,4 +97,4 @@ let step {regs; pc; memory} =
   (* Preserve r0 *)
   regs.(0) <- Int32.zero;
   (* Update PC *)
-  pc := !next_pc;
+  pc := next_pc;
