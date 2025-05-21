@@ -32,7 +32,7 @@ let generate_program ~insn_count ~insn_stream =
   (* A candidate instruction is invalid if the program ends up at already-accessed memory or
   is not aligned to 4 bytes (this restriction is strict, but required anyway for base ISA and
   helpful here to avoid partial overlap with previous instructions).
-  Also forbid instructions that overwrite the instruction that follows them (not detected as
+  Also forbid instructions that access the instruction that follows them (not detected as
   already-accessed yet because we haven't run the instruction).
   NOTE: For simplicity, currently forbid reexecuting instructions. Fixing requires making this validity
   check recursive because need to check the result of the existing instruction in new state. Would also
@@ -41,7 +41,7 @@ let generate_program ~insn_count ~insn_stream =
   But maybe should update fuzzer to generate aligned branches to avoid undersampling? *)
   let candidate_valid insn =
     let newpc = Riscvemulate.next_pc ~regs:emulator.regs ~pc:!(emulator.pc) ~insn in
-    let clobber = Riscvemulate.next_clobber ~regs:emulator.regs ~insn in
+    let clobber = Riscvemulate.next_access ~regs:emulator.regs ~insn in
     Int32.((newpc land of_int_exn 3) = zero) && (
       Sequence.init 4 ~f:(fun i -> Int32.(newpc + of_int_exn i))
       |> Sequence.for_all ~f:(fun addr -> not (Hashtbl.mem emulator.memory addr || clobber addr))
@@ -88,7 +88,7 @@ let test_program ~program ~insn_count =
   else Some (emulator.regs, Sim.Cpu.regs sim_cpu, mem_diff)
 
 (* Run programs with limited reg/memory to cause hazards *)
-let insn_count = 3
+let insn_count = 1000
 let _ = for i = 1 to 100 do
   let insn_stream = random_stream ~mem_range:Int32.(zero, of_int_exn 16) ~reg_max:8 ~seed:i () in
   let (program, trace) = generate_program ~insn_count ~insn_stream:insn_stream in

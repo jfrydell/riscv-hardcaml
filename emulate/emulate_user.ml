@@ -68,9 +68,10 @@ let next_pc ~regs ~pc ~insn = match insn with
       ) then Int32.(pc + imm) else Int32.(pc + of_int_exn 4)
   | _ -> Int32.(pc + of_int_exn 4)
 
-(* Get a function determining if an address would be overwritten by the given instruction. *)
-let next_clobber ~regs ~insn = match insn with
-  | Riscv.Store (size, {rs1; imm; _}) -> fun addr ->
+(* Get a function determining if an address would be accessed by the given instruction. *)
+let next_access ~regs ~insn = match insn with
+  | Riscv.Store (size, {rs1; imm; _})
+  | Riscv.Load (size, _, {rs1; imm; _}) -> fun addr ->
       Int32.(between (addr - (regs.(rs1) + imm)) ~low:zero ~high:(Int.(mem_size size - 1) |> of_int_exn))
   | _ -> fun _ -> false
 
