@@ -44,6 +44,8 @@ let store ~memory ~addr ~value ~size =
 let less_than_unsigned a b = Int32.(match is_negative a, is_negative b with
     | true, false -> false | false, true -> true | _ -> a < b)
 
+let mem_size = function Riscv.Word -> 4 | Riscv.Half -> 2 | Riscv.Byte -> 1
+
 (* Instruction at current PC *)
 let current_pc_insn {pc; memory; _} =
   let insn = load ~memory ~addr:!pc ~size:4 ~extend:Unsigned in
@@ -66,6 +68,12 @@ let next_pc ~regs ~pc ~insn = match insn with
       ) then Int32.(pc + imm) else Int32.(pc + of_int_exn 4)
   | _ -> Int32.(pc + of_int_exn 4)
 
+(* Get a function determining if an address would be overwritten by the given instruction. *)
+let next_clobber ~regs ~insn = match insn with
+  | Riscv.Store (size, {rs1; imm; _}) -> fun addr ->
+      Int32.(between (addr - (regs.(rs1) + imm)) ~low:zero ~high:(Int.(mem_size size - 1) |> of_int_exn))
+  | _ -> fun _ -> false
+
 (* Execute 1 instruction on the emulator, updating its state *)
 let step {regs; pc; memory} =
   let open Riscv in
@@ -84,7 +92,6 @@ let step {regs; pc; memory} =
     | Sra -> regs.(rd) <- Int32.(asr) src1 (Int32.to_int_exn src2 % 32)
     | Or -> regs.(rd) <- Int32.(src1 lor src2)
     | And -> regs.(rd) <- Int32.(src1 land src2)
-  and mem_size = function Riscv.Word -> 4 | Riscv.Half -> 2 | Riscv.Byte -> 1
   in
 
   (* Calculate next PC (must happen before main computation for jalr updating same reg it reads) *)
