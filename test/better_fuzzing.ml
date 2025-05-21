@@ -88,9 +88,36 @@ let test_program ~program ~insn_count =
   else Some (emulator.regs, Sim.Cpu.regs sim_cpu, mem_diff)
 
 (* Run programs with limited reg/memory to cause hazards *)
-let insn_count = 1000
+let insn_count = 100
 let _ = for i = 1 to 100 do
   let insn_stream = random_stream ~mem_range:Int32.(zero, of_int_exn 16) ~reg_max:8 ~seed:i () in
+  let (program, trace) = generate_program ~insn_count ~insn_stream:insn_stream in
+  (* Stdio.printf "\n\nRunning program %d\n" i;
+  List.iter trace ~f:(fun i -> Stdio.print_s (Riscvemulate.sexp_of_insn i));
+  Stdio.printf "\nInitial memory contents:\n";
+  Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 sexp_of_int program); *)
+  let result = test_program ~program ~insn_count:(insn_count + 5) in
+  match result with
+  | Some (correct_regs, sim_regs, mem_diff) -> (
+    Stdio.printf "Error in program %d\n" i;
+    List.iter trace ~f:(fun i -> Stdio.print_s (Riscvemulate.sexp_of_insn i));
+    Stdio.printf "\nCorrect regs:\n";
+    Stdio.print_s (sexp_of_array sexp_of_int32 correct_regs);
+    Stdio.printf "\nActual regs:\n";
+    Stdio.print_s (sexp_of_array sexp_of_int32 sim_regs);
+    Stdio.printf "\nMem diff:\n";
+    Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 [%sexp_of: int * int] mem_diff);
+    Stdio.printf "\nInitial memory contents:\n";
+    Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 sexp_of_int program);
+    failwith ("error in program " ^ Int.to_string i)
+  )
+  | None -> ()
+done
+
+(* Run larger programs with no limits for coverage *)
+let insn_count = 1000
+let _ = for i = 1 to 100 do
+  let insn_stream = random_stream ~mem_range:Int32.(min_value, max_value) ~reg_max:32 ~seed:i () in
   let (program, trace) = generate_program ~insn_count ~insn_stream:insn_stream in
   (* Stdio.printf "\n\nRunning program %d\n" i;
   List.iter trace ~f:(fun i -> Stdio.print_s (Riscvemulate.sexp_of_insn i));
