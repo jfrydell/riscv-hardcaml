@@ -2,6 +2,11 @@ open Hardcaml
 open Signal
 
 module Op = struct
+  include Types.Scalar (struct
+      let port_name = "opcode"
+      let port_width = 7
+    end)
+
   let intR = of_bit_string "0110011"
   let intI = of_bit_string "0010011"
   let load = of_bit_string "0000011"
@@ -14,8 +19,14 @@ module Op = struct
   let env = of_bit_string "1110011"
 end
 
+(** Values of funct3 for branches and ALU operations. *)
 module Funct3 = struct
+  include Types.Scalar (struct
+      let port_name = "funct3"
+      let port_width = 3
+    end)
 
+  (* Branch types *)
   let beq = of_bit_string "000"
   let bne = of_bit_string "001"
   let blt = of_bit_string "100"
@@ -23,4 +34,13 @@ module Funct3 = struct
   let bltu = of_bit_string "110"
   let bgeu = of_bit_string "111"
 
+  (* ALU ops *)
+  let add_or_sub = of_bit_string "000"
+  let sll = of_bit_string "001"
+  let slt = of_bit_string "010"
+  let sltu = of_bit_string "011"
+  let xor = of_bit_string "100"
+  let srl_or_sra = of_bit_string "101"
+  let or' = of_bit_string "110"
+  let and' = of_bit_string "111"
 end

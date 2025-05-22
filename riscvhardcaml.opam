@@ -12,6 +12,11 @@ bug-reports: "https://github.com/username/reponame/issues"
 depends: [
   "ocaml"
   "dune" {>= "3.16"}
+  "core"
+  "core_unix"
+  "hardcaml"
+  "hardcaml_circuits"
+  "hardcaml_waveterm"
   "odoc" {with-doc}
 ]
 build: [

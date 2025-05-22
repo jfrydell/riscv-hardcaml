@@ -19,7 +19,7 @@
  (name riscvhardcaml)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml dune)
+ (depends ocaml dune core core_unix hardcaml hardcaml_circuits hardcaml_waveterm)
  (tags
   (topics "to describe" your project)))
 
