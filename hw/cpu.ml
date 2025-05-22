@@ -54,7 +54,7 @@ this must be implemented in the bubble and stall signals.
 If a stage is marked as both bubbling and stalling, it will stall (allows setting bubble N = stall N-1 as default).
 Produces a `pipe_signal`, i.e. a function mapping a stage to a signal from these registers.
 *)
-let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero (Signal.width signal)) ~regspec =
+let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero (Signal.width signal)) ~regspec () =
   (* Signal in stage N is just input if N was inject stage, otherwise add register with value N-1 as input.
   Easily implemented with simple recursion: *)
   let rec get_signal si =
@@ -62,8 +62,6 @@ let forward_pipeline ~signal ~stage ~stall ~bubble ?default:(default=Signal.zero
     else if si = (stage_index stage) then signal
     else let prev = get_memo (si-1) in Signal.(
       let s = reg regspec ~enable:(~: (stall (index_stage si))) (mux2 (bubble (index_stage si)) default prev) in
-      (* Stdio.printf "%d: " si; (* TODO why all the duplicate signals? *)
-      Stdio.print_s (sexp_of_list sexp_of_string (names signal)); *)
       set_names s (List.map (names signal) ~f:(fun n -> stage_names.(si) ^ "." ^ n));
       s
     )
@@ -102,14 +100,14 @@ let cpu (inputs: Signal.t I.t) =
     let withoutstall = function D | X -> branch_execute | _ -> gnd in
     withoutstall s ||: stall (index_stage (stage_index s - 1))
   in
-  let forward_pipeline ~signal ~stage ?default = forward_pipeline ~signal ~stage ~stall ~bubble ?default ~regspec in
+  let forward_pipeline ~signal ~stage ?default () = forward_pipeline ~signal ~stage ~stall ~bubble ?default ~regspec () in
 
   (* Fetch stage *)
   let next_pc = wire 32 -- "next_pc" in
   let pc_reg = reg regspec ~enable:(~: (stall F)) next_pc -- "pcreg" in
-  let pc = forward_pipeline ~signal:pc_reg ~stage:F in
-  let insn = forward_pipeline ~signal:(inputs.insn -- "insn") ~stage:F ~default:(of_hex ~width:32 "00000013") in
-  let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F in (* for tracking commits *)
+  let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
+  let insn = forward_pipeline ~signal:(inputs.insn -- "insn") ~stage:F ~default:(of_hex ~width:32 "00000013") () in
+  let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F () in (* for tracking commits *)
   (* Next PC calculation. increment by 1 unless we are branching *)
   let branch_pc = wire 32 -- "branch_pc" in
   next_pc <== mux2 branch_execute branch_pc (pc_reg +:. 4);
@@ -135,13 +133,13 @@ let cpu (inputs: Signal.t I.t) =
   rs2val D <== regfile.rsval.(1);
 
   (* Place decoded values into pipeline *)
-  let opcode = forward_pipeline ~signal:decoded.opcode ~stage:D
-  and rs1 = forward_pipeline ~signal:decoded.rs1 ~stage:D
-  and rs2 = forward_pipeline ~signal:decoded.rs2 ~stage:D
-  and rd = forward_pipeline ~signal:decoded.rd ~stage:D
-  and imm = forward_pipeline ~signal:decoded.imm ~stage:D
-  and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D
-  and funct7 = forward_pipeline ~signal:decoded.funct7 ~stage:D in
+  let opcode = forward_pipeline ~signal:decoded.opcode ~stage:D ()
+  and rs1 = forward_pipeline ~signal:decoded.rs1 ~stage:D ()
+  and rs2 = forward_pipeline ~signal:decoded.rs2 ~stage:D ()
+  and rd = forward_pipeline ~signal:decoded.rd ~stage:D ()
+  and imm = forward_pipeline ~signal:decoded.imm ~stage:D ()
+  and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D ()
+  and funct7 = forward_pipeline ~signal:decoded.funct7 ~stage:D () in
 
   (* Execute stage *)
   (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
@@ -189,7 +187,7 @@ let cpu (inputs: Signal.t I.t) =
     (* If jal or jalr, then PC+4; otherwise from ALU (auipc and lui implemented in ALU src
     selection, with lui's rs1=0 ensuring imm passes through ALU unchanged) *)
     mux2 ((opcode X ==: Riscv.Op.jal) |: (opcode X ==: Riscv.Op.jalr)) (pc X +: of_string "32'd4") alu_result
-  ) ~stage:X M;
+  ) ~stage:X () M;
 
 
   (* Memory stage *)
@@ -215,7 +213,7 @@ let cpu (inputs: Signal.t I.t) =
   (* Value in rd at W is either that from X or value from memory *)
   rdval W <== forward_pipeline ~signal:(
     mux2 load loaded_val (rdval M)
-  ) ~stage:M W;
+  ) ~stage:M () W;
 
 
   (* Writeback stage *)
@@ -227,14 +225,14 @@ let cpu (inputs: Signal.t I.t) =
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
   (rs1val X) <== mux2 ((rs1 X ==: rd M) &: (rs1 X <>: zero 5) -- "bypassMX1") (rdval M) (
                   mux2 ((rs1 X ==: rd W) &: (rs1 X <>: zero 5) -- "bypassWX1") (rdval W) (
-                  forward_pipeline ~signal:(rs1val D) ~stage:D X));
+                  forward_pipeline ~signal:(rs1val D) ~stage:D () X));
   (rs2val X) <== mux2 ((rs2 X ==: rd M) &: (rs2 X <>: zero 5) -- "bypassMX2") (rdval M) (
                   mux2 ((rs2 X ==: rd W) &: (rs2 X <>: zero 5) -- "bypassWX2") (rdval W) (
-                  forward_pipeline ~signal:(rs2val D) ~stage:D X));
+                  forward_pipeline ~signal:(rs2val D) ~stage:D () X));
   (* for store data *)
   (rs2val M) <== mux2 ((rs2 M ==: rd W) &: (rs2 M <>: zero 5) -- "bypassWM2")
                       (rdval W)
-                      (forward_pipeline ~signal:(rs2val X) ~stage:X M);
+                      (forward_pipeline ~signal:(rs2val X) ~stage:X () M);
 
 
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
