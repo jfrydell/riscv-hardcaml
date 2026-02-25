@@ -64,7 +64,7 @@ let create scope (insn : _ I.t) =
        Decoded.Optype.of_funct3
          ~arithr:(opcode ==: Riscv.Op.intR)
          ~arithi:(opcode ==: Riscv.Op.intI)
-         ~f7top:(msb funct7)
+         ~f7second:funct7.:(5)
          funct3
    }
    : _ O.t)

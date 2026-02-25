@@ -1,4 +1,4 @@
 (library
  (name sim)
- (libraries base hardcaml hardcaml_waveterm riscvhardcaml riscvemulate)
+ (libraries core hardcaml hardcaml_waveterm riscvhardcaml riscvemulate)
  (preprocess (pps ppx_jane)))

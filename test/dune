@@ -1,4 +1,4 @@
 (tests
- (names basic fuzz)
- (libraries base hardcaml riscvhardcaml riscvemulate sim)
+ (names basic fuzz_tests)
+ (libraries core hardcaml riscvhardcaml riscvemulate sim fuzz)
  (preprocess (pps ppx_jane ppx_sexp_conv)))
