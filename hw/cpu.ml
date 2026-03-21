@@ -8,18 +8,7 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; insn : 'a [@bits 32]
     ; insn_valid : 'a
-    ; data : 'a [@bits 32]
-    }
-  [@@deriving hardcaml]
-end
-
-module MemReq = struct
-  type 'a t =
-    { addr : 'a [@bits 32] (* 0 = no request, 1 = load/store *)
-    ; valid : 'a
-    ; store : 'a (* 00 = byte, 01 = half, 10 = word *)
-    ; size : 'a [@bits 2]
-    ; store_data : 'a [@bits 32]
+    ; from_memory : 'a Memory.From_mem.t
     }
   [@@deriving hardcaml]
 end
@@ -27,9 +16,9 @@ end
 module O = struct
   type 'a t =
     { pc : 'a [@bits 32]
-    ; access : 'a MemReq.t
-      (* 1 if an instruction will be committed on the next cycle. Register file state will be in sync with this. *)
+    ; to_memory : 'a Memory.To_mem.t
     ; will_commit : 'a
+    (* 1 if an instruction will be committed on the next cycle. Register file state will be in sync with this. *)
     }
   [@@deriving hardcaml]
 end
@@ -75,13 +64,13 @@ If a stage is marked as both bubbling and stalling, it will stall (allows settin
 Produces a `pipe_signal`, i.e. a function mapping a stage to a signal from these registers.
 *)
 let forward_pipeline
-      ~signal
-      ~stage
-      ~stall
-      ~bubble
-      ?(default = Signal.zero (Signal.width signal))
-      ~clocking
-      ()
+  ~signal
+  ~stage
+  ~stall
+  ~bubble
+  ?(default = Signal.zero (Signal.width signal))
+  ~clocking
+  ()
   =
   (* Signal in stage N is just input if N was inject stage, otherwise add register with value N-1 as input.
   Easily implemented with simple recursion: *)
@@ -126,15 +115,18 @@ let pipe_wires name w =
 let create scope (i : _ I.t) =
   let open Signal in
   (* Pipeline stuff *)
-  (* Stall signals: only ever stall decode (on hazard) and fetch (propagated from decode) *)
-  let stall_decode = wire 1 -- "stall decode" in
+  (* Stall signals: only ever stall decode (on hazard), fetch (propagated from decode), and
+     memory (on a load miss). *)
+  let%hw stall_decode = wire 1 in
+  let%hw stall_memory = wire 1 in
   let stall = function
-    | F -> stall_decode |: ~:(i.insn_valid)
-    | D -> stall_decode
-    | X | M | W -> gnd
+    | F -> ~:(i.insn_valid) |: stall_decode |: stall_memory
+    | D -> stall_decode |: stall_memory
+    | X | M -> stall_memory
+    | W -> gnd
   in
   (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
-  let branch_execute = wire 1 -- "branch from execute" in
+  let%hw branch_execute = wire 1 in
   let bubble s =
     let withoutstall = function
       | D | X -> branch_execute
@@ -146,8 +138,8 @@ let create scope (i : _ I.t) =
     forward_pipeline ~signal ~stage ~stall ~bubble ?default ~clocking:i.clocking ()
   in
   (* Fetch stage *)
-  let next_pc = wire 32 -- "next_pc" in
-  let pc_reg = Types.Clocking.reg i.clocking ~enable:~:(stall F) next_pc -- "pcreg" in
+  let%hw next_pc = wire 32 in
+  let%hw pc_reg = Types.Clocking.reg i.clocking ~enable:~:(stall F) next_pc in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
   let insn =
     forward_pipeline
@@ -159,7 +151,7 @@ let create scope (i : _ I.t) =
   let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F () in
   (* for tracking commits *)
   (* Next PC calculation. increment by 1 unless we are branching *)
-  let branch_pc = wire 32 -- "branch_pc" in
+  let%hw branch_pc = wire 32 in
   next_pc <-- mux2 branch_execute branch_pc (pc_reg +:. 4);
   (* Decode *)
   let%hw.Decoded.Of_signal decoded = Decode.hierarchical ~scope (insn D) in
@@ -233,7 +225,24 @@ let create scope (i : _ I.t) =
         ];
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
-  (* Pass written value to M for writeback, bypassing, and address computation (each only where applicable) *)
+  (* Memory stage. Inputs are latched internally. *)
+  let%hw.Memory.O.Of_signal mem =
+    Memory.hierarchical
+      ~scope
+      { clocking = i.clocking
+      ; from_pipeline =
+          { addr = alu_result.result
+          ; load = opcode X ==: Riscv.Op.load
+          ; store = opcode X ==: Riscv.Op.store
+          ; size = (funct3 X).:[1, 0]
+          ; sign_extend = ~:((funct3 X).:(2))
+          ; store_data = rs2val X
+          }
+      ; from_memory = i.from_memory
+      }
+  in
+  stall_memory <-- mem.stall;
+  (* Pass written value to M for writeback and bypassing, then that or loaded value to W. *)
   rdval M
   <-- forward_pipeline
         ~signal:
@@ -246,37 +255,12 @@ let create scope (i : _ I.t) =
         ~stage:X
         ()
         M;
-  (* Memory stage *)
-  let load = opcode M ==: Riscv.Op.load in
-  let store = opcode M ==: Riscv.Op.store in
-  (* Generate fields: type (00 = no access, 10 = load, 11 = store); size (00 = byte, 01 = half, 10 = word); addr; data *)
-  let access =
-    MemReq.
-      { addr = rdval M
-      ; size = (funct3 M).:[1, 0]
-      ; valid = load |: store
-      ; store
-      ; store_data = rs2val M
-      }
-  in
-  (* Get data in from memory (TODO: have valid interface with stalling) *)
-  let unsigned_extend = (funct3 M).:(2) in
-  let loaded_val =
-    mux
-      access.size
-      [ mux2
-          unsigned_extend
-          (uresize ~width:32 i.data.:[7, 0])
-          (sresize ~width:32 i.data.:[7, 0])
-      ; mux2
-          unsigned_extend
-          (uresize ~width:32 i.data.:[15, 0])
-          (sresize ~width:32 i.data.:[15, 0])
-      ; i.data
-      ]
-  in
-  (* Value in rd at W is either that from X or value from memory *)
-  rdval W <-- forward_pipeline ~signal:(mux2 load loaded_val (rdval M)) ~stage:M () W;
+  rdval W
+  <-- forward_pipeline
+        ~signal:(mux2 (opcode M ==: Riscv.Op.load) mem.load_data (rdval M))
+        ~stage:M
+        ()
+        W;
   (* Writeback stage *)
   reg_write <-- rdval W;
   reg_dest <-- rd W;
@@ -309,7 +293,7 @@ let create scope (i : _ I.t) =
     opcode X ==: Riscv.Op.load &: (rs ==: rd X) &: (rs <>: zero 5)
   in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
-  O.{ pc = pc_reg; access; will_commit = is_insn W }
+  O.{ pc = pc_reg; to_memory = mem.to_memory; will_commit = is_insn W }
 ;;
 
 let hierarchical =
