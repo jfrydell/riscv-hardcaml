@@ -95,23 +95,21 @@ let generate_program ~insn_count ~insn_stream =
 (* Run a program on the emulator and on the simulated hardware, returning None if end state is the
    same and Some with diagnostics otherwise. *)
 let test_program ~program ~insn_count =
-  let sim_cpu = Sim.Cpu.create No_waves
-  and sim_mem = Hashtbl.copy program in
+  let sim = Sim.Cpu.create ~memory:(Hashtbl.copy program) No_waves in
   let emulator = Riscvemulate.with_mem program in
   for _ = 0 to insn_count do
-    Sim.Cpu.cycle_insn sim_cpu sim_mem;
+    Sim.Cpu.cycle_insn sim;
     Riscvemulate.step emulator
   done;
   let mem_diff =
-    Hashtbl.merge emulator.memory sim_mem ~f:(fun ~key:_ -> function
+    Hashtbl.merge emulator.memory sim.memory ~f:(fun ~key:_ -> function
       | `Both (a, b) -> if a <> b then Some (a, b) else None
       | `Left a -> if a <> 0 then Some (a, 0) else None
       | `Right b -> if 0 <> b then Some (0, b) else None)
   in
-  if Array.equal Int32.equal (Sim.Cpu.regs sim_cpu) emulator.regs
-     && Hashtbl.is_empty mem_diff
+  if Array.equal Int32.equal (Sim.Cpu.regs sim) emulator.regs && Hashtbl.is_empty mem_diff
   then None
-  else Some (emulator.regs, Sim.Cpu.regs sim_cpu, mem_diff)
+  else Some (emulator.regs, Sim.Cpu.regs sim, mem_diff)
 ;;
 
 (* QuickCheck configuration for a single fuzz test *)

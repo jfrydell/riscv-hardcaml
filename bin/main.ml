@@ -29,7 +29,7 @@ let program =
     ]
 ;;
 
-let mem = (Riscvemulate.init ~insns:program ~addr:Int32.zero).memory
+let memory = (Riscvemulate.init ~insns:program ~addr:Int32.zero).memory
 
 (* (* Reproduce fuzz test. *) *)
 (* let mem, trace = *)
@@ -50,17 +50,17 @@ let mem = (Riscvemulate.init ~insns:program ~addr:Int32.zero).memory
 (*     Riscvemulate.step emulator) *)
 (* ;; *)
 
-let sim, waves = Sim.Cpu.create ~config:(Cyclesim.Config.trace `Everything) Waves
+let sim, waves = Sim.Cpu.create ~memory ~config:(Cyclesim.Config.trace `Everything) Waves
 
 let _ =
   for _ = 1 to 10 do
-    Sim.Cpu.cycle_external sim mem;
-    Cyclesim.cycle sim;
+    Sim.Cpu.cycle_external sim;
+    Cyclesim.cycle sim.sim;
     (* Print outputs *)
     Stdio.print_s
       (Riscvhardcaml.Cpu.O.sexp_of_t
          (fun b -> sexp_of_int (Bits.to_int_trunc !b))
-         (Cyclesim.outputs sim));
+         (Cyclesim.outputs sim.sim));
     (* Print reg *)
     Stdio.printf "%d\n" (Int32.to_int_exn (Sim.Cpu.regs sim).(7))
   done

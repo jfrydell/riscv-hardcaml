@@ -44,7 +44,7 @@ let store_to_bytes ~word_offset ~size ~data =
     [ "0001"; "0011"; "1111" ]
     |> List.map ~f:of_bit_string
     |> mux size
-    |> uresize ~width:bus_width
+    |> uresize ~width:(bus_width / 8)
     |> log_shift ~f:sll ~by:(word_offset @: of_bit_string "000")
     |> split_lsb ~part_width:1
   in
@@ -59,7 +59,9 @@ let load_data_from_word ~word ~word_offset ~sign_extend ~size =
   let resize ~from_width =
     let bottom = sel_bottom ~width:from_width data in
     let extend_bit = msb bottom &&: sign_extend in
-    sresize ~width:(32 - from_width) extend_bit @: bottom
+    if from_width = 32
+    then bottom
+    else sresize ~width:(32 - from_width) extend_bit @: bottom
   in
   mux size [ resize ~from_width:8; resize ~from_width:16; resize ~from_width:32 ]
 ;;
@@ -93,10 +95,9 @@ module To_mem = struct
   type 'a t =
     { addr : 'a [@bits addr_width]
     ; load : 'a (** Requests the block at [addr]. *)
-    ; store : 'a (** Stores a word of data to [addr]. *)
-    ; data : 'a [@bits bus_width]
-    (** Data to write for a store. TODO: not a full bus width; just the actual bytes being
-        written *)
+    ; store : 'a (** Performs a (write-through) store to [addr]. *)
+    ; store_data : 'a [@bits addr_width]
+    ; store_size : 'a [@bits 2] (** Log2 of size. *)
     }
   [@@deriving hardcaml]
 end
@@ -230,7 +231,8 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
        { addr = active_access.addr
        ; load = load_miss
        ; store = active_access.store
-       ; data = store_word
+       ; store_size = active_access.size
+       ; store_data = active_access.store_data
        }
    ; load_data
    ; stall
