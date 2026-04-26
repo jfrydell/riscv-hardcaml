@@ -95,20 +95,32 @@ let next_pc ~regs ~pc ~insn =
   | _ -> Int32.(pc + of_int_exn 4)
 ;;
 
-(* Get a function determining if an address would be accessed by the given instruction. *)
-let next_access ~regs ~insn =
+(** Get the next instruction's access address and size (in bytes), if it is a memory
+    access. *)
+let access_addr_and_size ~regs ~insn =
   match insn with
   | Riscv.Store (size, { rs1; imm; _ }) | Riscv.Load (size, _, { rs1; imm; _ }) ->
-    fun addr ->
-      Int32.(
-        between
-          (addr - (regs.(rs1) + imm))
-          ~low:zero
-          ~high:(Int.(mem_size size - 1) |> of_int_exn))
-  | _ -> fun _ -> false
+    Some (Int32.(regs.(rs1) + imm), mem_size size)
+  | _ -> None
 ;;
 
-(* Execute 1 instruction on the emulator, updating its state *)
+(** Get a function determining if an address would be accessed by the given instruction. *)
+let next_access ~regs ~insn =
+  match access_addr_and_size ~regs ~insn with
+  | Some (access_addr, size) ->
+    fun addr ->
+      Int32.(between (addr - access_addr) ~low:zero ~high:(Int.(size - 1) |> of_int_exn))
+  | None -> fun _ -> false
+;;
+
+(** Return [true] if the next instruction is an unaligned access. *)
+let is_unaligned_access ~regs ~insn =
+  match access_addr_and_size ~regs ~insn with
+  | Some (addr, size) -> (size - 1) land Int32.to_int_exn addr <> 0
+  | None -> false
+;;
+
+(** Execute 1 instruction on the emulator, updating its state *)
 let step { regs; pc; memory } =
   let open Riscv in
   (* Read instruction and convert to expected format *)

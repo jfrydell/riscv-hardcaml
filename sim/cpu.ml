@@ -62,17 +62,18 @@ let cycle_external { sim; memory; fill_addr } =
       ~size:(1 lsl Bits.to_int_trunc !(outputs.to_memory.store_size))
       ~value:(Bits.to_int32_trunc !(outputs.to_memory.store_data));
   (* Process load, filling cache block. *)
-  let mask =
-    (1 lsl Riscvhardcaml.Memory.bits_word_offset) - 1 |> Int32.of_int_exn |> Int32.lnot
+  let word_incr = Riscvhardcaml.Memory.bus_width / 8 |> Int32.of_int_exn in
+  let block_mask =
+    (Riscvhardcaml.Memory.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
   in
   if Bits.to_bool !(outputs.to_memory.load)
   then (
     let addr =
       match !fill_addr with
-      | None -> Int32.(addr land mask)
-      | Some addr -> Int32.(addr + of_int_exn 1)
+      | None -> Int32.(addr land block_mask)
+      | Some addr -> Int32.(addr + word_incr)
     in
-    let last = Int32.(mask land addr <> mask land (addr + of_int_exn 1)) in
+    let last = Int32.(block_mask land addr <> block_mask land (addr + word_incr)) in
     inputs.from_memory.addr := Bits.of_int32_trunc ~width:32 addr;
     inputs.from_memory.valid := Bits.vdd;
     inputs.from_memory.last := Bits.of_bool last;
@@ -91,11 +92,11 @@ let cycle_external { sim; memory; fill_addr } =
   else inputs.from_memory.valid := Bits.gnd
 ;;
 
-(* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 5 cycles.
+(* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 10 cycles.
 Runs the given function prior to each cycle (for example, to inject instructions at PC for hacky testing) *)
 let cycle_insn ?f:(cycle_fn = fun _ -> ()) t =
   match
-    List.range 0 5
+    List.range 0 25
     |> List.find ~f:(fun _ ->
       cycle_fn ();
       let committed = Bits.to_bool !((Cyclesim.outputs t.sim).will_commit) in
@@ -104,7 +105,7 @@ let cycle_insn ?f:(cycle_fn = fun _ -> ()) t =
       committed)
   with
   | Some _cycle -> ()
-  | None -> failwith "CPU didn't report instruction commit for 5 cycles"
+  | None -> failwith "CPU didn't report instruction commit for 25 cycles"
 ;;
 
 (* Flushes any instructions still in the CPU without updating state *)

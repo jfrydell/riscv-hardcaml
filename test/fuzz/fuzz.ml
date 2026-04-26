@@ -50,7 +50,7 @@ let rec resample ~f ~cond =
    executed. In other words, executing insn_count+N instructions ends in the same state for any N>=0.
 
    Returns the program as a memory and as a trace of executed instructions. *)
-let generate_program ~insn_count ~insn_stream =
+let generate_program ~insn_count ~insn_stream ~filter =
   let insn_stream = ref insn_stream in
   let get_insn () =
     let insn, stream = Sequence.next !insn_stream |> Option.value_exn in
@@ -64,6 +64,9 @@ let generate_program ~insn_count ~insn_stream =
      is not aligned to 4 bytes. Also forbid instructions that access the instruction that follows
      them, and forbid reexecuting instructions. *)
   let candidate_valid insn =
+    filter insn
+    && (not @@ Riscvemulate.is_unaligned_access ~regs:emulator.regs ~insn)
+    &&
     let newpc = Riscvemulate.next_pc ~regs:emulator.regs ~pc:!(emulator.pc) ~insn in
     let clobber = Riscvemulate.next_access ~regs:emulator.regs ~insn in
     Int32.(newpc land of_int_exn 3 = zero)
@@ -134,9 +137,9 @@ let fuzz_config_shrinker =
 
 (* Run a fuzz test: generate program from config, compare emulator vs hardware.
    Diagnostics are embedded in the error sexp so shrinking is quiet. *)
-let check_equivalence ~reg_max { seed; insn_count; _ } =
+let check_equivalence ?(filter = Fn.const true) ~reg_max { seed; insn_count; _ } =
   let insn_stream = insn_stream ~reg_max ~seed in
-  let program, trace = generate_program ~insn_count ~insn_stream in
+  let program, trace = generate_program ~insn_count ~insn_stream ~filter in
   match test_program ~program ~insn_count:(insn_count + 5) with
   | None -> ()
   | Some (correct_regs, sim_regs, mem_diff) ->

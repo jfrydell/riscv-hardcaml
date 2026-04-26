@@ -24,11 +24,11 @@ let bits_word_offset = address_bits_for (bus_width / 8)
 let extract_tag addr = sel_top ~width:bits_tag addr
 
 let extract_index addr =
-  drop_bottom ~width:bits_block_offset addr |> sel_top ~width:bits_index
+  drop_bottom ~width:bits_block_offset addr |> sel_bottom ~width:bits_index
 ;;
 
 let extract_word addr =
-  drop_bottom ~width:bits_word_offset addr |> sel_top ~width:bits_word_index
+  drop_bottom ~width:bits_word_offset addr |> sel_bottom ~width:bits_word_index
 ;;
 
 (** Convert an aligned store to a bus-width list of bytes with data masks. Little endian. *)
@@ -45,7 +45,7 @@ let store_to_bytes ~word_offset ~size ~data =
     |> List.map ~f:of_bit_string
     |> mux size
     |> uresize ~width:(bus_width / 8)
-    |> log_shift ~f:sll ~by:(word_offset @: of_bit_string "000")
+    |> log_shift ~f:sll ~by:word_offset
     |> split_lsb ~part_width:1
   in
   List.map2_exn data valids ~f:(fun value valid -> { With_valid.value; valid })
@@ -144,7 +144,7 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
     From_pipe.Of_signal.mux2 stall active_access from_pipeline
   in
   From_pipe.Of_signal.(
-    assign active_access (reg (Types.Clocking.to_spec clocking) from_pipeline));
+    assign active_access (reg (Types.Clocking.to_spec clocking) next_access));
   (* Extract tag and index from access and upcoming. *)
   let%hw active_tag = extract_tag active_access.addr in
   let%hw active_index = extract_index active_access.addr in
@@ -178,23 +178,23 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
   let%hw tag_match = read_metadata.valid &&: (active_tag ==: read_metadata.tag) in
   load_miss <-- (active_access.load &&: ~:tag_match);
   (* Loads extract and extend data from a word loaded from memory. *)
+  let%hw word_offset = sel_bottom ~width:bits_word_offset active_access.addr in
   let%hw loaded_word = wire bus_width in
   let%hw load_data =
     load_data_from_word
       ~word:loaded_word
-      ~word_offset:active_access.addr
+      ~word_offset
       ~sign_extend:active_access.sign_extend
       ~size:active_access.size
   in
   (* Stores write-through, one cycle after loading the tag (when the instruction is technically in W). *)
   let%hw store_hit = tag_match &&: active_access.store in
-  let%hw word_offset = sel_bottom ~width:bits_word_offset active_access.addr in
   let%hw store_word =
     let original = split_lsb ~part_width:8 ~exact:true loaded_word in
-    let overwrite =
+    let%hw_list.With_valid.Of_signal overwrite_bytes =
       store_to_bytes ~word_offset ~size:active_access.size ~data:active_access.store_data
     in
-    List.map2_exn overwrite original ~f:(fun { valid; value } -> mux2 valid value)
+    List.map2_exn overwrite_bytes original ~f:(fun { valid; value } -> mux2 valid value)
     |> concat_lsb
   in
   (* Cache data. Written by incoming fill data from memory on a load miss, or on a store hit. Read on a load. *)
@@ -215,7 +215,7 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
       ~read_ports:
         [| { read_clock = clocking.clock
            ; read_enable = vdd
-           ; read_address = extract_word active_access.addr
+           ; read_address = extract_word next_access.addr
            }
         |]
       ~name:"data"

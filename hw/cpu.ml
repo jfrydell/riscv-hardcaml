@@ -123,7 +123,10 @@ let create scope (i : _ I.t) =
     | F -> ~:(i.insn_valid) |: stall_decode |: stall_memory
     | D -> stall_decode |: stall_memory
     | X | M -> stall_memory
-    | W -> gnd
+        (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
+
+           TODO: I think best fix is for stalled pipeline latch to take in bypassed value, rather than always holding its current value. Current stall signal uses pipeline latch write-enable, but my understanding is that just muxes in current value when disabled. Muxing in the value from after bypass logic instead shouldn't affect logic depth. *)
+    | W -> stall_memory
   in
   (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
   let%hw branch_execute = wire 1 in
@@ -293,7 +296,7 @@ let create scope (i : _ I.t) =
     opcode X ==: Riscv.Op.load &: (rs ==: rd X) &: (rs <>: zero 5)
   in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
-  O.{ pc = pc_reg; to_memory = mem.to_memory; will_commit = is_insn W }
+  O.{ pc = pc_reg; to_memory = mem.to_memory; will_commit = is_insn W &&: ~:(stall W) }
 ;;
 
 let hierarchical =
