@@ -5,8 +5,9 @@ module Sim = Cyclesim.With_interface (Riscvhardcaml.Cpu.I) (Riscvhardcaml.Cpu.O)
 
 type t =
   { sim : Sim.t
-  ; fill_addr : int32 option ref
   ; memory : int Int32.Table.t
+  ; fill_addr : int32 option ref
+  ; store_stall_counter : int ref
   }
 
 type 'a waves_return =
@@ -26,15 +27,15 @@ let create
   Cyclesim.cycle_check sim;
   Cyclesim.cycle_before_clock_edge sim;
   match waves with
-  | No_waves -> { sim; memory; fill_addr = ref None }
+  | No_waves -> { sim; memory; fill_addr = ref None; store_stall_counter = ref 7 }
   | Waves ->
     let waves, sim = Waveform.create sim in
-    { sim; memory; fill_addr = ref None }, waves
+    { sim; memory; fill_addr = ref None; store_stall_counter = ref 7 }, waves
 ;;
 
 (* Processes CPU outputs (pc & data access), updating memory and feeding in correct inputs (insn & load data).
 Should be called before a `Cyclesim.cycle`. *)
-let cycle_external { sim; memory; fill_addr } =
+let cycle_external { sim; memory; fill_addr; store_stall_counter } =
   let inputs = Cyclesim.inputs sim
   and outputs = Cyclesim.outputs sim in
   (* Fetch instruction from memory, or use provided custom `insn` getter *)
@@ -55,12 +56,18 @@ let cycle_external { sim; memory; fill_addr } =
   (* TODO: not always instant store. *)
   inputs.from_memory.store_ready := Bits.vdd;
   if Bits.to_bool !(outputs.to_memory.store)
-  then
-    Riscvemulate.store
-      ~memory
-      ~addr
-      ~size:(1 lsl Bits.to_int_trunc !(outputs.to_memory.store_size))
-      ~value:(Bits.to_int32_trunc !(outputs.to_memory.store_data));
+  then (
+    Int.decr store_stall_counter;
+    if !store_stall_counter = 0
+    then (
+      inputs.from_memory.store_ready := Bits.gnd;
+      store_stall_counter := 7)
+    else
+      Riscvemulate.store
+        ~memory
+        ~addr
+        ~size:(1 lsl Bits.to_int_trunc !(outputs.to_memory.store_size))
+        ~value:(Bits.to_int32_trunc !(outputs.to_memory.store_data)));
   (* Process load, filling cache block. *)
   let word_incr = Riscvhardcaml.Memory.bus_width / 8 |> Int32.of_int_exn in
   let block_mask =
