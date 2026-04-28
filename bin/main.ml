@@ -4,7 +4,7 @@ open Hardcaml
 let scope = Scope.create ~flatten_design:false ()
 
 let circuit =
-  let open Riscvhardcaml in
+  let open Riscv_core in
   let module Circuit = Circuit.With_interface (Cpu.I) (Cpu.O) in
   Circuit.create_exn ~name:"cpu" (Cpu.create scope)
 ;;
@@ -66,7 +66,7 @@ let _ =
     Cyclesim.cycle sim.sim;
     (* Print outputs *)
     Stdio.print_s
-      (Riscvhardcaml.Cpu.O.sexp_of_t
+      (Riscv_core.Cpu.O.sexp_of_t
          (fun b -> sexp_of_int (Bits.to_int_trunc !b))
          (Cyclesim.outputs sim.sim));
     (* Print reg *)

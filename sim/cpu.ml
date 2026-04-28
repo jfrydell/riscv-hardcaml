@@ -1,7 +1,7 @@
 open! Core
 open Hardcaml
 open Hardcaml_waveterm
-module Sim = Cyclesim.With_interface (Riscvhardcaml.Cpu.I) (Riscvhardcaml.Cpu.O)
+module Sim = Cyclesim.With_interface (Riscv_core.Cpu.I) (Riscv_core.Cpu.O)
 
 type t =
   { sim : Sim.t
@@ -23,7 +23,7 @@ let create
   : a
   =
   let scope = Scope.create ~flatten_design:true () in
-  let sim = Sim.create ~config (Riscvhardcaml.Cpu.hierarchical ~scope) in
+  let sim = Sim.create ~config (Riscv_core.Cpu.hierarchical ~scope) in
   Cyclesim.cycle_check sim;
   Cyclesim.cycle_before_clock_edge sim;
   match waves with
@@ -52,51 +52,50 @@ let cycle_external { sim; memory; fill_addr; store_stall_counter } =
   (* Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
 
   (* Process store *)
-  let addr = Bits.to_int32_trunc !(outputs.to_memory.addr) in
-  (* TODO: not always instant store. *)
-  inputs.from_memory.store_ready := Bits.vdd;
-  if Bits.to_bool !(outputs.to_memory.store)
+  inputs.write_from_mem.store_ready := Bits.vdd;
+  if Bits.to_bool !(outputs.write_to_mem.store)
   then (
     Int.decr store_stall_counter;
     if !store_stall_counter = 0
     then (
-      inputs.from_memory.store_ready := Bits.gnd;
+      inputs.write_from_mem.store_ready := Bits.gnd;
       store_stall_counter := 7)
     else
       Riscvemulate.store
         ~memory
-        ~addr
-        ~size:(1 lsl Bits.to_int_trunc !(outputs.to_memory.store_size))
-        ~value:(Bits.to_int32_trunc !(outputs.to_memory.store_data)));
+        ~addr:(Bits.to_int32_trunc !(outputs.write_to_mem.addr))
+        ~size:(1 lsl Bits.to_int_trunc !(outputs.write_to_mem.store_size))
+        ~value:(Bits.to_int32_trunc !(outputs.write_to_mem.store_data)));
   (* Process load, filling cache block. *)
-  let word_incr = Riscvhardcaml.Memory.bus_width / 8 |> Int32.of_int_exn in
+  let word_incr = Memory.Iface.cpu_bus_width / 8 |> Int32.of_int_exn in
   let block_mask =
-    (Riscvhardcaml.Memory.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
+    (Memory.Iface.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
   in
-  if Bits.to_bool !(outputs.to_memory.load)
+  if Bits.to_bool !(outputs.read_to_mem.load)
   then (
+    let addr = Bits.to_int32_trunc !(outputs.read_to_mem.addr) in
     let addr =
       match !fill_addr with
       | None -> Int32.(addr land block_mask)
       | Some addr -> Int32.(addr + word_incr)
     in
     let last = Int32.(block_mask land addr <> block_mask land (addr + word_incr)) in
-    inputs.from_memory.addr := Bits.of_int32_trunc ~width:32 addr;
-    inputs.from_memory.valid := Bits.vdd;
-    inputs.from_memory.last := Bits.of_bool last;
-    (inputs.from_memory.data
+    inputs.read_from_mem.addr := Bits.of_int32_trunc ~width:32 addr;
+    inputs.read_from_mem.valid := Bits.vdd;
+    inputs.read_from_mem.last := Bits.of_bool last;
+    (inputs.read_from_mem.data
      := let load_byte addr =
           Hashtbl.find memory addr
           |> Option.value ~default:0
           |> Bits.of_int_trunc ~width:8
         in
         let bytes =
-          List.init (Riscvhardcaml.Memory.bus_width / 8) ~f:(fun n ->
+          List.init (Memory.Iface.cpu_bus_width / 8) ~f:(fun n ->
             load_byte Int32.(addr + of_int_exn n))
         in
         Bits.concat_lsb bytes);
     fill_addr := if last then None else Some addr)
-  else inputs.from_memory.valid := Bits.gnd
+  else inputs.read_from_mem.valid := Bits.gnd
 ;;
 
 (* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 10 cycles.

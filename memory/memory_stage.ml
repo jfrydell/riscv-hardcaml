@@ -1,15 +1,15 @@
-(** Memory stage, including L1 cache, ready/valid interface to memory, and
+(** Memory stage of the CPU, including L1 cache, ready/valid interface to memory, and
     shifting/extending data as necessary. *)
 
 open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = 32
-let bus_width = 64
+let addr_width = Iface.addr_width
+let bus_width = Iface.cpu_bus_width
+let block_size_bits = Iface.block_size_bits
 
 (* 512 * 32B blocks = 131 KB L1 cache. *)
-let block_size_bits = 256
 let num_sets = 512
 let bits_block_offset = address_bits_for (block_size_bits / 8)
 let bits_index = address_bits_for num_sets
@@ -80,40 +80,20 @@ module From_pipe = struct
   [@@deriving hardcaml]
 end
 
-module From_mem = struct
-  type 'a t =
-    { data : 'a [@bits bus_width]
-    ; addr : 'a [@bits addr_width]
-    ; valid : 'a
-    ; last : 'a (** Signifies the last word in a block. *)
-    ; store_ready : 'a
-    }
-  [@@deriving hardcaml]
-end
-
-module To_mem = struct
-  type 'a t =
-    { addr : 'a [@bits addr_width]
-    ; load : 'a (** Requests the block at [addr]. *)
-    ; store : 'a (** Performs a (write-through) store to [addr]. *)
-    ; store_data : 'a [@bits addr_width]
-    ; store_size : 'a [@bits 2] (** Log2 of size. *)
-    }
-  [@@deriving hardcaml]
-end
-
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
     ; from_pipeline : 'a From_pipe.t
-    ; from_memory : 'a From_mem.t
+    ; write_from_mem : 'a Iface.Write_through.From_mem.t
+    ; read_from_mem : 'a Iface.Read_block.From_mem.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { to_memory : 'a To_mem.t
+    { write_to_mem : 'a Iface.Write_through.To_mem.t
+    ; read_to_mem : 'a Iface.Read_block.To_mem.t
     ; load_data : 'a [@bits 32]
     ; stall : 'a
     (** The memory stage is stalled. Output data is invalid, and any access from the
@@ -131,7 +111,7 @@ module Metadata = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
+let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _ I.t) =
   (* A load missed in the cache, so we must stall and fill the cache line. *)
   let%hw load_miss = wire 1 in
   (* Stall waiting for a store to write-through. *)
@@ -204,12 +184,12 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
       ~size:num_words
       ~write_ports:
         [| { write_clock = clocking.clock
-           ; write_enable = store_hit ||: from_memory.valid
+           ; write_enable = store_hit ||: read_from_mem.valid
            ; (* Could probably register load_miss here and elsewhere for timing, as
                we don't need it to rise immediately and know when it will lower. *)
              write_address =
-               extract_word (mux2 load_miss from_memory.addr active_access.addr)
-           ; write_data = mux2 load_miss from_memory.data store_word
+               extract_word (mux2 load_miss read_from_mem.addr active_access.addr)
+           ; write_data = mux2 load_miss read_from_mem.data store_word
            }
         |]
       ~read_ports:
@@ -223,17 +203,17 @@ let create scope ({ clocking; from_pipeline; from_memory } : _ I.t) =
   in
   loaded_word <-- data_mem.(0);
   (* Stores stall until acknowledged by memory (or a write buffer). *)
-  store_stall <-- (active_access.store &&: ~:(from_memory.store_ready));
+  store_stall <-- (active_access.store &&: ~:(write_from_mem.store_ready));
   (* When a load has missed, request the block from memory until we receive the
      last word to fill the block back from memory. *)
-  update_tag <-- (load_miss &&: from_memory.last &&: from_memory.valid);
-  ({ to_memory =
+  update_tag <-- (load_miss &&: read_from_mem.last &&: read_from_mem.valid);
+  ({ write_to_mem =
        { addr = active_access.addr
-       ; load = load_miss
        ; store = active_access.store
        ; store_size = active_access.size
        ; store_data = active_access.store_data
        }
+   ; read_to_mem = { addr = active_access.addr; load = load_miss }
    ; load_data
    ; stall
    }

@@ -8,7 +8,10 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; insn : 'a [@bits 32]
     ; insn_valid : 'a
-    ; from_memory : 'a Memory.From_mem.t
+    ; read_from_mem : 'a Memory.Iface.Read_block.From_mem.t
+    (** Response from memory for L1 D-cache read. *)
+    ; write_from_mem : 'a Memory.Iface.Write_through.From_mem.t
+    (** Response from memory for L1 D-cache write-through. *)
     }
   [@@deriving hardcaml]
 end
@@ -16,7 +19,8 @@ end
 module O = struct
   type 'a t =
     { pc : 'a [@bits 32]
-    ; to_memory : 'a Memory.To_mem.t
+    ; read_to_mem : 'a Memory.Iface.Read_block.To_mem.t
+    ; write_to_mem : 'a Memory.Iface.Write_through.To_mem.t
     ; will_commit : 'a
     (* 1 if an instruction will be committed on the next cycle. Register file state will be in sync with this. *)
     }
@@ -122,8 +126,9 @@ let create scope (i : _ I.t) =
   let stall = function
     | F -> ~:(i.insn_valid) |: stall_decode |: stall_memory
     | D -> stall_decode |: stall_memory
-    | X | M -> stall_memory
-        (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
+    | X | M ->
+      stall_memory
+      (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
 
            TODO: I think best fix is for stalled pipeline latch to take in bypassed value, rather than always holding its current value. Current stall signal uses pipeline latch write-enable, but my understanding is that just muxes in current value when disabled. Muxing in the value from after bypass logic instead shouldn't affect logic depth. *)
     | W -> stall_memory
@@ -229,8 +234,8 @@ let create scope (i : _ I.t) =
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
   (* Memory stage. Inputs are latched internally. *)
-  let%hw.Memory.O.Of_signal mem =
-    Memory.hierarchical
+  let%hw.Memory.Memory_stage.O.Of_signal mem =
+    Memory.Memory_stage.hierarchical
       ~scope
       { clocking = i.clocking
       ; from_pipeline =
@@ -241,7 +246,8 @@ let create scope (i : _ I.t) =
           ; sign_extend = ~:((funct3 X).:(2))
           ; store_data = rs2val X
           }
-      ; from_memory = i.from_memory
+      ; read_from_mem = i.read_from_mem
+      ; write_from_mem = i.write_from_mem
       }
   in
   stall_memory <-- mem.stall;
@@ -296,7 +302,12 @@ let create scope (i : _ I.t) =
     opcode X ==: Riscv.Op.load &: (rs ==: rd X) &: (rs <>: zero 5)
   in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
-  O.{ pc = pc_reg; to_memory = mem.to_memory; will_commit = is_insn W &&: ~:(stall W) }
+  O.
+    { pc = pc_reg
+    ; read_to_mem = mem.read_to_mem
+    ; write_to_mem = mem.write_to_mem
+    ; will_commit = is_insn W &&: ~:(stall W)
+    }
 ;;
 
 let hierarchical =

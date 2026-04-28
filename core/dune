@@ -1,0 +1,4 @@
+(library
+ (name riscv_core)
+ (libraries core hardcaml memory)
+ (preprocess (pps ppx_jane ppx_hardcaml)))
