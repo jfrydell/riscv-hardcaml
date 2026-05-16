@@ -1,5 +1,6 @@
 open! Core
 open! Hardcaml
+open Signal
 
 let addr_width = 32
 let cpu_bus_width = 64
@@ -17,8 +18,45 @@ module Write_through = struct
     [@@deriving hardcaml]
   end
 
+  let to_bytes ({ To_mem.addr; store_data; store_size; _ } : _ To_mem.t) =
+    let word_offset = sel_bottom ~width:(address_bits_for (cpu_bus_width / 8)) addr in
+    let rep_data ~width =
+      List.init (cpu_bus_width / width) ~f:(fun _ -> sel_bottom ~width store_data) |> concat_lsb
+    in
+    let data =
+      mux store_size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
+      |> split_lsb ~part_width:8
+    in
+    let valids =
+      [ "0001"; "0011"; "1111" ]
+      |> List.map ~f:of_bit_string
+      |> mux store_size
+      |> uresize ~width:(cpu_bus_width / 8)
+      |> log_shift ~f:sll ~by:word_offset
+      |> split_lsb ~part_width:1
+    in
+    List.map2_exn data valids ~f:(fun value valid -> { With_valid.value; valid })
+  ;;
+
   module From_mem = struct
     type 'a t = { store_ready : 'a } [@@deriving hardcaml]
+  end
+end
+
+(** Write a block back from a cache to memory. *)
+module Write_back = struct
+  module To_mem = struct
+    type 'a t =
+      { data : 'a [@bits cpu_bus_width]
+      ; addr : 'a [@bits addr_width]
+      ; write : 'a
+      ; last : 'a
+      }
+    [@@deriving hardcaml]
+  end
+
+  module From_mem = struct
+    type 'a t = { ready : 'a } [@@deriving hardcaml]
   end
 end
 
