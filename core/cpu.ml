@@ -6,11 +6,11 @@ open Signal
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; insn : 'a [@bits 32]
-    ; insn_valid : 'a
-    ; read_from_mem : 'a Memory.Iface.Read_block.From_mem.t
+    ; read_from_insn_mem : 'a Memory.Iface.Read_block.From_mem.t
+    (** Response from memory for L1 I-cache read. *)
+    ; read_from_data_mem : 'a Memory.Iface.Read_block.From_mem.t
     (** Response from memory for L1 D-cache read. *)
-    ; write_from_mem : 'a Memory.Iface.Write_through.From_mem.t
+    ; write_from_data_mem : 'a Memory.Iface.Write_through.From_mem.t
     (** Response from memory for L1 D-cache write-through. *)
     }
   [@@deriving hardcaml]
@@ -18,11 +18,11 @@ end
 
 module O = struct
   type 'a t =
-    { pc : 'a [@bits 32]
-    ; read_to_mem : 'a Memory.Iface.Read_block.To_mem.t
-    ; write_to_mem : 'a Memory.Iface.Write_through.To_mem.t
-    ; will_commit : 'a
-    (* 1 if an instruction will be committed on the next cycle. Register file state will be in sync with this. *)
+    { read_to_insn_mem : 'a Memory.Iface.Read_block.To_mem.t
+    ; read_to_data_mem : 'a Memory.Iface.Read_block.To_mem.t
+    ; write_to_data_mem : 'a Memory.Iface.Write_through.To_mem.t
+    ; commit_pc : 'a With_valid.t [@bits 32]
+    (** The PC of the instruction committing this cycle, when valid. *)
     }
   [@@deriving hardcaml]
 end
@@ -119,12 +119,13 @@ let pipe_wires name w =
 let create scope (i : _ I.t) =
   let open Signal in
   (* Pipeline stuff *)
-  (* Stall signals: only ever stall decode (on hazard), fetch (propagated from decode), and
-     memory (on a load miss). *)
+  (* Stall signals: only ever stall decode (on hazard), fetch (insn not valid),
+     and memory (on a load miss). *)
+  let%hw stall_fetch = wire 1 in
   let%hw stall_decode = wire 1 in
   let%hw stall_memory = wire 1 in
   let stall = function
-    | F -> ~:(i.insn_valid) |: stall_decode |: stall_memory
+    | F -> stall_fetch |: stall_decode |: stall_memory
     | D -> stall_decode |: stall_memory
     | X | M ->
       stall_memory
@@ -149,9 +150,15 @@ let create scope (i : _ I.t) =
   let%hw next_pc = wire 32 in
   let%hw pc_reg = Types.Clocking.reg i.clocking ~enable:~:(stall F) next_pc in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
+  let%hw.Memory.L1i_cache.O.Of_signal icache =
+    Memory.L1i_cache.hierarchical
+      ~scope
+      { clocking = i.clocking; pc = pc F; read_from_mem = i.read_from_insn_mem }
+  in
+  stall_fetch <-- ~:(icache.insn.valid);
   let insn =
     forward_pipeline
-      ~signal:(i.insn -- "insn")
+      ~signal:icache.insn.value
       ~stage:F
       ~default:(of_hex ~width:32 "00000013")
       ()
@@ -246,8 +253,8 @@ let create scope (i : _ I.t) =
           ; sign_extend = ~:((funct3 X).:(2))
           ; store_data = rs2val X
           }
-      ; read_from_mem = i.read_from_mem
-      ; write_from_mem = i.write_from_mem
+      ; read_from_mem = i.read_from_data_mem
+      ; write_from_mem = i.write_from_data_mem
       }
   in
   stall_memory <-- mem.stall;
@@ -302,11 +309,12 @@ let create scope (i : _ I.t) =
     opcode X ==: Riscv.Op.load &: (rs ==: rd X) &: (rs <>: zero 5)
   in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
+  let%hw commit_valid = is_insn W &&: ~:(stall W) in
   O.
-    { pc = pc_reg
-    ; read_to_mem = mem.read_to_mem
-    ; write_to_mem = mem.write_to_mem
-    ; will_commit = is_insn W &&: ~:(stall W)
+    { read_to_insn_mem = icache.read_to_mem
+    ; read_to_data_mem = mem.read_to_mem
+    ; write_to_data_mem = mem.write_to_mem
+    ; commit_pc = { valid = commit_valid; value = pc W }
     }
 ;;
 

@@ -6,7 +6,8 @@ module Sim = Cyclesim.With_interface (Riscv_core.Cpu.I) (Riscv_core.Cpu.O)
 type t =
   { sim : Sim.t
   ; memory : int Int32.Table.t
-  ; fill_addr : int32 option ref
+  ; insn_fill_addr : int32 option ref
+  ; data_fill_addr : int32 option ref
   ; store_stall_counter : int ref
   }
 
@@ -27,63 +28,52 @@ let create
   Cyclesim.cycle_check sim;
   Cyclesim.cycle_before_clock_edge sim;
   match waves with
-  | No_waves -> { sim; memory; fill_addr = ref None; store_stall_counter = ref 7 }
+  | No_waves ->
+    { sim
+    ; memory
+    ; insn_fill_addr = ref None
+    ; data_fill_addr = ref None
+    ; store_stall_counter = ref 7
+    }
   | Waves ->
     let waves, sim = Waveform.create sim in
-    { sim; memory; fill_addr = ref None; store_stall_counter = ref 7 }, waves
+    ( { sim
+      ; memory
+      ; insn_fill_addr = ref None
+      ; data_fill_addr = ref None
+      ; store_stall_counter = ref 7
+      }
+    , waves )
 ;;
 
-(* Processes CPU outputs (pc & data access), updating memory and feeding in correct inputs (insn & load data).
-Should be called before a `Cyclesim.cycle`. *)
-let cycle_external { sim; memory; fill_addr; store_stall_counter } =
-  let inputs = Cyclesim.inputs sim
-  and outputs = Cyclesim.outputs sim in
-  (* Fetch instruction from memory, or use provided custom `insn` getter *)
-  let insn =
-    Riscvemulate.load
-      ~memory
-      ~addr:(Bits.to_int32_trunc !(outputs.pc))
-      ~size:4
-      ~extend:Riscvemulate.Unsigned
-  in
-  inputs.insn := Bits.of_int32_trunc ~width:32 insn;
-  inputs.insn_valid := Bits.vdd;
-  (* DEBUG *)
-  (* Stdio.printf "sim PC %d = %08x\n" (Bits.to_int !(outputs.pc)) (Bits.to_int !(inputs.insn)); *)
+(** Process a read request from memory, streaming a cache block back.
 
-  (* Process store *)
-  inputs.write_from_mem.store_ready := Bits.vdd;
-  if Bits.to_bool !(outputs.write_to_mem.store)
-  then (
-    Int.decr store_stall_counter;
-    if !store_stall_counter = 0
-    then (
-      inputs.write_from_mem.store_ready := Bits.gnd;
-      store_stall_counter := 7)
-    else
-      Riscvemulate.store
-        ~memory
-        ~addr:(Bits.to_int32_trunc !(outputs.write_to_mem.addr))
-        ~size:(1 lsl Bits.to_int_trunc !(outputs.write_to_mem.store_size))
-        ~value:(Bits.to_int32_trunc !(outputs.write_to_mem.store_data)));
-  (* Process load, filling cache block. *)
+    Takes in request/response interface and address tracking state of currently-streaming
+    block. *)
+let process_read_request
+  ~memory
+  ~(request : _ Memory.Iface.Read_block.To_mem.t)
+  ~(response : _ Memory.Iface.Read_block.From_mem.t)
+  ~(fill_addr : int32 option ref)
+  =
   let word_incr = Memory.Iface.cpu_bus_width / 8 |> Int32.of_int_exn in
   let block_mask =
     (Memory.Iface.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
   in
-  if Bits.to_bool !(outputs.read_to_mem.load)
+  response.valid := Bits.gnd;
+  if Bits.to_bool !(request.load)
   then (
-    let addr = Bits.to_int32_trunc !(outputs.read_to_mem.addr) in
+    let request_addr = Bits.to_int32_trunc !(request.addr) in
     let addr =
       match !fill_addr with
-      | None -> Int32.(addr land block_mask)
+      | None -> Int32.(request_addr land block_mask)
       | Some addr -> Int32.(addr + word_incr)
     in
     let last = Int32.(block_mask land addr <> block_mask land (addr + word_incr)) in
-    inputs.read_from_mem.addr := Bits.of_int32_trunc ~width:32 addr;
-    inputs.read_from_mem.valid := Bits.vdd;
-    inputs.read_from_mem.last := Bits.of_bool last;
-    (inputs.read_from_mem.data
+    response.addr := Bits.of_int32_trunc ~width:Memory.Iface.addr_width addr;
+    response.valid := Bits.vdd;
+    response.last := Bits.of_bool last;
+    (response.data
      := let load_byte addr =
           Hashtbl.find memory addr
           |> Option.value ~default:0
@@ -95,7 +85,38 @@ let cycle_external { sim; memory; fill_addr; store_stall_counter } =
         in
         Bits.concat_lsb bytes);
     fill_addr := if last then None else Some addr)
-  else inputs.read_from_mem.valid := Bits.gnd
+;;
+
+(* Processes CPU outputs, updating memory and feeding in responses.
+Should be called before a `Cyclesim.cycle`. *)
+let cycle_external { sim; memory; insn_fill_addr; data_fill_addr; store_stall_counter } =
+  let inputs = Cyclesim.inputs sim
+  and outputs = Cyclesim.outputs sim in
+  (* Process store *)
+  inputs.write_from_data_mem.store_ready := Bits.vdd;
+  if Bits.to_bool !(outputs.write_to_data_mem.store)
+  then (
+    Int.decr store_stall_counter;
+    if !store_stall_counter = 0
+    then (
+      inputs.write_from_data_mem.store_ready := Bits.gnd;
+      store_stall_counter := 7)
+    else
+      Riscvemulate.store
+        ~memory
+        ~addr:(Bits.to_int32_trunc !(outputs.write_to_data_mem.addr))
+        ~size:(1 lsl Bits.to_int_trunc !(outputs.write_to_data_mem.store_size))
+        ~value:(Bits.to_int32_trunc !(outputs.write_to_data_mem.store_data)));
+  process_read_request
+    ~memory
+    ~request:outputs.read_to_insn_mem
+    ~response:inputs.read_from_insn_mem
+    ~fill_addr:insn_fill_addr;
+  process_read_request
+    ~memory
+    ~request:outputs.read_to_data_mem
+    ~response:inputs.read_from_data_mem
+    ~fill_addr:data_fill_addr
 ;;
 
 (* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 10 cycles.
@@ -105,7 +126,7 @@ let cycle_insn ?f:(cycle_fn = fun _ -> ()) t =
     List.range 0 25
     |> List.find ~f:(fun _ ->
       cycle_fn ();
-      let committed = Bits.to_bool !((Cyclesim.outputs t.sim).will_commit) in
+      let committed = Bits.to_bool !((Cyclesim.outputs t.sim).commit_pc.valid) in
       cycle_external t;
       Cyclesim.cycle t.sim;
       committed)
@@ -118,7 +139,6 @@ let cycle_insn ?f:(cycle_fn = fun _ -> ()) t =
 let flush t =
   for _ = 1 to 5 do
     cycle_external t;
-    (Cyclesim.inputs t.sim).insn_valid := Bits.gnd;
     Cyclesim.cycle t.sim
   done
 ;;
@@ -132,4 +152,4 @@ let regs { sim; _ } =
 ;;
 
 (* Get the current PC from the simulator *)
-let pc { sim; _ } = Bits.to_int32_trunc !((Cyclesim.outputs sim).pc)
+let pc { sim; _ } = Bits.to_int32_trunc !((Cyclesim.outputs sim).commit_pc.value)
