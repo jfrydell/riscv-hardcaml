@@ -2,6 +2,7 @@ open Core
 open Fuzz
 
 let time ~name f =
+  let () = print_endline [%string "Running %{name}..."] in
   let start = Time_ns.now () in
   f ();
   let end_ = Time_ns.now () in

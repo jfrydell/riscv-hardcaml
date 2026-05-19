@@ -14,7 +14,6 @@ let bits_tag = addr_width - bits_block_offset - bits_index
 let num_words = num_sets * (block_size_bits / bus_width)
 let bits_word_index = address_bits_for num_words
 let bits_word_offset = address_bits_for (bus_width / 8)
-
 let extract_tag addr = sel_top ~width:bits_tag addr
 
 let extract_index addr =
@@ -42,6 +41,7 @@ module O = struct
   type 'a t =
     { read_to_mem : 'a Iface.Read_block.To_mem.t
     ; insn : 'a With_valid.t [@bits 32]
+    ; pc : 'a [@bits 32] (** PC that we are currently fetching or outputting on [insn]. *)
     }
   [@@deriving hardcaml]
 end
@@ -112,6 +112,7 @@ let create scope ({ clocking; pc; read_from_mem } : _ I.t) =
   update_tag <-- (miss &&: read_from_mem.valid &&: read_from_mem.last);
   ({ read_to_mem = { addr = active_pc; load = miss }
    ; insn = { valid = tag_match; value = insn_value }
+   ; pc = active_pc
    }
    : _ O.t)
 ;;

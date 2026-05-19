@@ -119,8 +119,8 @@ let pipe_wires name w =
 let create scope (i : _ I.t) =
   let open Signal in
   (* Pipeline stuff *)
-  (* Stall signals: only ever stall decode (on hazard), fetch (insn not valid),
-     and memory (on a load miss). *)
+  (* Stall signals: stall decode on hazard, fetch when insn not valid, memory
+     on a load miss. *)
   let%hw stall_fetch = wire 1 in
   let%hw stall_decode = wire 1 in
   let%hw stall_memory = wire 1 in
@@ -147,15 +147,29 @@ let create scope (i : _ I.t) =
     forward_pipeline ~signal ~stage ~stall ~bubble ?default ~clocking:i.clocking ()
   in
   (* Fetch stage *)
-  let%hw next_pc = wire 32 in
-  let%hw pc_reg = Types.Clocking.reg i.clocking ~enable:~:(stall F) next_pc in
-  let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
+  (* Next PC to fetch is the branch PC if branching, PC+4 if successfully
+     fetched, or the previous PC if fetch stalled. Note that a branch occurs
+     while fetch is stalled, the PC which missed is now irrelevant, and we need
+     to save the branch PC so the branch insn can continue onward (could
+     imagine stalling execute, but if M and W proceed then bypassing is
+     annoying). *)
+  let%hw branch_pc = wire 32 in
+  let%hw pc_reg = wire 32 in
+  let%hw pc_to_fetch =
+    mux2 branch_execute branch_pc (mux2 (stall F) pc_reg (pc_reg +:. 4))
+  in
+  pc_reg <-- Types.Clocking.reg i.clocking pc_to_fetch;
   let%hw.Memory.L1i_cache.O.Of_signal icache =
     Memory.L1i_cache.hierarchical
       ~scope
-      { clocking = i.clocking; pc = pc F; read_from_mem = i.read_from_insn_mem }
+      { clocking = i.clocking; pc = pc_to_fetch; read_from_mem = i.read_from_insn_mem }
   in
-  stall_fetch <-- ~:(icache.insn.valid);
+  let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
+  (* Fetch is stalled if the PC missed in the cache. If a branch occurred
+     during miss handling, the I-cache gives [valid] once the miss is handled,
+     and we must ignore. *)
+  (* TODO: don't love the comparison here, and really feels like this should be simplifiable. *)
+  stall_fetch <-- (~:(icache.insn.valid) ||: (icache.pc <>: pc_reg));
   let insn =
     forward_pipeline
       ~signal:icache.insn.value
@@ -163,11 +177,8 @@ let create scope (i : _ I.t) =
       ~default:(of_hex ~width:32 "00000013")
       ()
   in
-  let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F () in
   (* for tracking commits *)
-  (* Next PC calculation. increment by 1 unless we are branching *)
-  let%hw branch_pc = wire 32 in
-  next_pc <-- mux2 branch_execute branch_pc (pc_reg +:. 4);
+  let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F () in
   (* Decode *)
   let%hw.Decoded.Of_signal decoded = Decode.hierarchical ~scope (insn D) in
   (* Register file *)
