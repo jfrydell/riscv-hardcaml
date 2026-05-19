@@ -1,5 +1,14 @@
 (executable
  (public_name riscvhardcaml)
  (name main)
- (libraries core riscv_core sim riscvemulate hardcaml_waveterm hardcaml_waveterm.interactive fuzz)
+ (libraries
+  core
+  core_unix
+  riscv_core
+  sim
+  riscvemulate
+  hardcaml_waveterm
+  hardcaml_waveterm.interactive
+  fuzz
+  test_definitions)
  (preprocess (pps ppx_jane)))

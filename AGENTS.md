@@ -1,3 +1,20 @@
+# Project Basics
+
+This project aims to implement a RISC-V CPU in Hardcaml.
+
+The project is built with the dune build system and uses opam for package management.
+To build in the correct environment, use `opam exec -- dune build`.
+
+## Running / Testing
+
+All tests, primarily several configurations of fuzzing tests, can be run with `opam exec -- dune runtest`.
+If a test fails, it can be reproduced and debugged with the `bin/main.ml` executable's `debug` command, using `opam exec -- dune exec riscvhardcaml -- debug <ARGS>`.
+This supports the following arguments:
+- Exactly one of `--basic-test T` or `--fuzz-test CONFIG --seed S --insn-count N` must be provided, where `T` is the test number (always 0 for now) and `CONFIG` is one of "small", "hazards", or "coverage" (based on the suite of fuzzing tests that failed).
+- `--emulator-trace INFO` and `--trace INFO` print per-emulator-step (known-good) or per-simulated-cycle state, where `INFO` is a comma-separated list of register numbers `0`-`31`, `pc`, and `insn`.
+- `--max-cycles N` stops simulation if the requested instruction count has not committed in the given number of cycles.
+- `--view-waves` opens an interactive waveform viewer for human viewing, and should not be used by text-based agents.
+
 # Hardcaml Style Guide
 
 This document describes the preferred style for clean Hardcaml implementations in this repository.

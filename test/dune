@@ -1,4 +1,11 @@
+(library
+ (name test_definitions)
+ (modules test_definitions)
+ (libraries core riscvemulate)
+ (preprocess (pps ppx_jane)))
+
 (tests
  (names basic fuzz_tests)
- (libraries core hardcaml riscvemulate sim fuzz)
+ (modules basic fuzz_tests)
+ (libraries core hardcaml riscvemulate sim fuzz test_definitions)
  (preprocess (pps ppx_jane ppx_sexp_conv)))

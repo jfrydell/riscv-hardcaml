@@ -9,56 +9,26 @@ let time ~name f =
   print_endline [%string "Duration (%{name}): %{duration#Float}"]
 ;;
 
-(* Very small tests for debugging. Branches disallowed to make reproducing
-   easier (but filter can be updated based on test that fails). *)
-let () =
-  time ~name:"small" (fun () ->
+let run_fuzz_test (test : Test_definitions.Fuzz.t) =
+  let name = test.name
+  and quickcheck_seed = test.quickcheck_seed
+  and trials = test.trials
+  and insn_count_low = test.insn_count_low
+  and insn_count_high = test.insn_count_high
+  and reg_max = test.reg_max
+  and filter = test.filter in
+  time ~name (fun () ->
     Quickcheck.test
-      ~seed:(`Deterministic "small-fuzz")
-      ~trials:500
+      ~seed:(`Deterministic quickcheck_seed)
+      ~trials
       ~shrinker:fuzz_config_shrinker
       ~shrink_attempts:(`Limit 100)
       ~sexp_of:[%sexp_of: fuzz_config]
       (let open Quickcheck.Generator.Let_syntax in
        let%map seed = Int.gen_incl 1 100_000
-       and insn_count = Int.gen_uniform_incl 10 10 in
+       and insn_count = Int.gen_uniform_incl insn_count_low insn_count_high in
        { seed; insn_count; working_insn_count = 1 })
-      ~f:
-        (check_equivalence
-           ~filter:(function
-             | IntImm (Add, _) | Load _ | Store _ | Branch _ -> true
-             | _ -> false)
-           ~reg_max:4))
+      ~f:(check_equivalence ~filter ~reg_max))
 ;;
 
-(* Test 1: Small programs with limited registers to stress pipeline hazards *)
-let () =
-  time ~name:"hazards" (fun () ->
-    Quickcheck.test
-      ~seed:(`Deterministic "hazard-fuzz")
-      ~trials:500
-      ~shrinker:fuzz_config_shrinker
-      ~shrink_attempts:(`Limit 100)
-      ~sexp_of:[%sexp_of: fuzz_config]
-      (let open Quickcheck.Generator.Let_syntax in
-       let%map seed = Int.gen_incl 1 100_000
-       and insn_count = Int.gen_uniform_incl 100 200 in
-       { seed; insn_count; working_insn_count = 1 })
-      ~f:(check_equivalence ~reg_max:4))
-;;
-
-(* Test 2: Large programs with full register range for coverage *)
-let () =
-  time ~name:"coverage" (fun () ->
-    Quickcheck.test
-      ~seed:(`Deterministic "coverage-fuzz")
-      ~trials:500
-      ~shrinker:fuzz_config_shrinker
-      ~shrink_attempts:(`Limit 100)
-      ~sexp_of:[%sexp_of: fuzz_config]
-      (let open Quickcheck.Generator.Let_syntax in
-       let%map seed = Int.gen_incl 1 100_000
-       and insn_count = Int.gen_uniform_incl 500 2000 in
-       { seed; insn_count; working_insn_count = 1 })
-      ~f:(check_equivalence ~reg_max:32))
-;;
+let () = List.iter Test_definitions.Fuzz.all ~f:run_fuzz_test

@@ -151,5 +151,19 @@ let regs { sim; _ } =
   |> Array.map ~f:Bits.to_int32_trunc
 ;;
 
+let commit_pc { sim; _ } =
+  let outputs = Cyclesim.outputs sim in
+  if Bits.to_bool !(outputs.commit_pc.valid)
+  then Some (Bits.to_int32_trunc !(outputs.commit_pc.value))
+  else None
+;;
+
+let memory { memory; _ } = memory
+
+let cycle t =
+  cycle_external t;
+  Cyclesim.cycle t.sim
+;;
+
 (* Get the current PC from the simulator *)
 let pc { sim; _ } = Bits.to_int32_trunc !((Cyclesim.outputs sim).commit_pc.value)

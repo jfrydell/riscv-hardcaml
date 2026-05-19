@@ -1,14 +1,7 @@
 open! Base
 
-(* Run a basic program *)
-let program =
-  Riscvemulate.
-    [ IntImm (Add, { rd = 1; rs1 = 0; imm = Int32.of_int_exn 7 })
-    ; IntReg (Add, { rd = 2; rs1 = 1; rs2 = 1 })
-    ; Store (Half, { rs1 = 2; rs2 = 1; imm = Int32.of_int_exn (-14) })
-    ; Load (Half, Unsigned, { rd = 3; rs1 = 2; imm = Int32.of_int_exn (-14) })
-    ]
-;;
+let basic_test = Test_definitions.Basic.get_exn 0
+let program = basic_test.program
 
 let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero
 let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves

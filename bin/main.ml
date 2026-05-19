@@ -1,80 +1,265 @@
 open! Core
 open Hardcaml
+open Hardcaml_waveterm
+module Command = Core.Command
 
-let scope = Scope.create ~flatten_design:false ()
+module Trace_info = struct
+  type t =
+    | Reg of int
+    | Pc
+    | Insn
 
-let circuit =
-  let open Riscv_core in
-  let module Circuit = Circuit.With_interface (Cpu.I) (Cpu.O) in
-  Circuit.create_exn ~name:"cpu" (Cpu.create scope)
+  let parse_one token =
+    let token = String.strip token in
+    match String.lowercase token with
+    | "pc" -> Pc
+    | "insn" -> Insn
+    | _ ->
+      let reg = Int.of_string token in
+      if Int.between reg ~low:0 ~high:31
+      then Reg reg
+      else failwithf "register index out of range: %d" reg ()
+  ;;
+
+  let parse value =
+    value
+    |> String.split ~on:','
+    |> List.filter ~f:(fun token -> not (String.is_empty (String.strip token)))
+    |> List.map ~f:parse_one
+  ;;
+end
+
+type loaded_program =
+  { memory : int Int32.Table.t
+  ; insn_count : int
+  ; description : string
+  }
+
+module Debug_target = struct
+  type t =
+    | Basic of int
+    | Fuzz of
+        { name : string
+        ; seed : int
+        ; insn_count : int
+        }
+
+  let load_basic_test basic_test =
+    let test = Test_definitions.Basic.get_exn basic_test in
+    let emulator = Riscvemulate.init ~insns:test.program ~addr:Int32.zero in
+    { memory = Hashtbl.copy emulator.memory
+    ; insn_count = test.insn_count
+    ; description = [%string "basic test %{test.name} (%{basic_test#Int})"]
+    }
+  ;;
+
+  let load_fuzz_test ~name ~seed ~insn_count =
+    let test = Test_definitions.Fuzz.of_name_exn name in
+    let insn_stream = Fuzz.insn_stream ~reg_max:test.reg_max ~seed in
+    let memory, _trace =
+      Fuzz.generate_program ~insn_count ~insn_stream ~filter:test.filter
+    in
+    { memory
+    ; insn_count
+    ; description =
+        [%string "fuzz test %{name} seed=%{seed#Int} insn_count=%{insn_count#Int}"]
+    }
+  ;;
+
+  let to_program = function
+    | Basic basic_test -> load_basic_test basic_test
+    | Fuzz { name; seed; insn_count } -> load_fuzz_test ~name ~seed ~insn_count
+  ;;
+end
+
+type sim_run =
+  { cpu : Sim.Cpu.t
+  ; waves : Waveform.t option
+  }
+
+let create_sim ~memory ~view_waves =
+  if view_waves
+  then (
+    let sim, waves =
+      Sim.Cpu.create ~memory ~config:(Cyclesim.Config.trace `Everything) Waves
+    in
+    { cpu = sim; waves = Some waves })
+  else { cpu = Sim.Cpu.create ~memory No_waves; waves = None }
 ;;
 
-let database = Scope.circuit_database scope
-let rtl = Rtl.create ~database Verilog [ circuit ]
-let rtl_string = Rope.to_string (Rtl.full_hierarchy rtl)
-let () = Out_channel.write_all "_output/cpu.v" ~data:rtl_string
-
-(* Debug CPU with waveform *)
-let program =
-  Riscvemulate.(
-    (* [ IntImm (Add, { rd = 1; rs1 = 0; imm = Int32.of_int_exn 7 }) *)
-    (* ; IntReg (Add, { rd = 2; rs1 = 1; rs2 = 1 }) *)
-    (* ; Store (Half, { rs1 = 2; rs2 = 1; imm = Int32.of_int_exn (-14) }) *)
-    (* ; Load (Half, Unsigned, { rd = 3; rs1 = 2; imm = Int32.of_int_exn (-14) }) *)
-    [ AuiPc { rd = 3; imm = Int32.zero }
-    ; AuiPc { rd = 1; imm = Int32.of_int_exn 61440 }
-    ; Lui { rd = 3; imm = Int32.zero }
-    ; IntImm (Xor, { rd = 2; rs1 = 2; imm = Int32.of_int_exn 301 })
-    ; Load (Byte, Unsigned, { rd = 0; rs1 = 0; imm = Int32.of_int_exn 382 })
-    ; Jalr { rd = 1; rs1 = 2; imm = Int32.of_int_exn (-1) }
-    ])
+let load_hw_insn ~memory ~pc =
+  let insn_bits =
+    Riscvemulate.load ~memory ~addr:pc ~size:4 ~extend:Riscvemulate.Unsigned
+  in
+  match Riscvemulate.of_int32 insn_bits with
+  | Ok insn -> Sexp.to_string_hum [%sexp (insn : Riscvemulate.insn)]
+  | Error error -> Error.to_string_hum error
 ;;
 
-let memory = (Riscvemulate.init ~insns:program ~addr:Int32.zero).memory
-
-(* Reproduce fuzz test. *)
-let memory, trace =
-  ignore (program, memory);
-  let insn_stream = Fuzz.insn_stream ~reg_max:4 ~seed:91691 in
-  Fuzz.generate_program ~insn_count:10 ~insn_stream ~filter:(function
-    | IntImm (Add, _) -> true
-    | Load _ | Store _ | Branch _ -> true
-    | _ -> false)
+let format_trace_field ~memory ~pc_valid ~pc regs = function
+  | Trace_info.Reg reg -> [%string "x%{reg#Int}=%{regs.(reg)#Int32}"]
+  | Pc -> if pc_valid then [%string "pc=%{pc#Int32}"] else "pc=<no-commit>"
+  | Insn ->
+    if pc_valid then [%string "insn=%{load_hw_insn ~memory ~pc}"] else "insn=<no-commit>"
 ;;
 
-let () = print_s [%message (trace : Riscvemulate.insn list)]
-let emulator = Riscvemulate.with_mem memory
+let print_hw_trace ~cycle sim trace_infos =
+  if not (List.is_empty trace_infos)
+  then (
+    let commit_pc = Sim.Cpu.commit_pc sim in
+    let pc_valid = Option.is_some commit_pc in
+    let pc = Option.value commit_pc ~default:Int32.zero in
+    let regs = Sim.Cpu.regs sim in
+    let fields =
+      List.map
+        trace_infos
+        ~f:(format_trace_field ~memory:(Sim.Cpu.memory sim) ~pc_valid ~pc regs)
+      |> String.concat ~sep:" "
+    in
+    print_endline [%string "hw cycle=%{cycle#Int} %{fields}"])
+;;
+
+let print_emulator_trace ~step emulator trace_infos =
+  if not (List.is_empty trace_infos)
+  then (
+    let pc = Riscvemulate.pc emulator in
+    let regs = Riscvemulate.regs emulator in
+    let fields =
+      List.map trace_infos ~f:(function
+        | Trace_info.Reg reg -> [%string "x%{reg#Int}=%{regs.(reg)#Int32}"]
+        | Pc -> [%string "pc=%{pc#Int32}"]
+        | Insn ->
+          let insn = Riscvemulate.current_pc_insn emulator in
+          [%string "insn=%{Sexp.to_string_hum [%sexp (insn : Riscvemulate.insn)]}"])
+      |> String.concat ~sep:" "
+    in
+    print_endline [%string "emu step=%{step#Int} %{fields}"])
+;;
+
+let run_emulator_trace ~memory ~insn_count trace_infos =
+  if not (List.is_empty trace_infos)
+  then (
+    let emulator = Riscvemulate.with_mem (Hashtbl.copy memory) in
+    for step = 1 to insn_count do
+      print_emulator_trace ~step emulator trace_infos;
+      Riscvemulate.step emulator
+    done)
+;;
+
+let run_simulation ~memory ~insn_count ~max_cycles ~trace_infos ~view_waves =
+  let sim = create_sim ~memory:(Hashtbl.copy memory) ~view_waves in
+  let committed = ref 0 in
+  let cycle = ref 0 in
+  let cycle_limit = Option.value max_cycles ~default:Int.max_value in
+  while !committed < insn_count && !cycle < cycle_limit do
+    Int.incr cycle;
+    print_hw_trace ~cycle:!cycle sim.cpu trace_infos;
+    if Option.is_some (Sim.Cpu.commit_pc sim.cpu) then Int.incr committed;
+    Sim.Cpu.cycle sim.cpu
+  done;
+  let max_cycles_suffix =
+    match max_cycles with
+    | None -> ""
+    | Some max_cycles -> [%string " max_cycles=%{max_cycles#Int}"]
+  in
+  print_endline
+    [%string
+      "simulation complete: committed=%{!committed#Int}/%{insn_count#Int} \
+       cycles=%{!cycle#Int}%{max_cycles_suffix}"];
+  Option.iter sim.waves ~f:Hardcaml_waveterm_interactive.run
+;;
+
+let debug_command =
+  Command.basic
+    ~summary:"Run a named basic or fuzz program under the emulator and simulator"
+    Command.Let_syntax.(
+      let%map_open basic_test =
+        flag "--basic-test" (optional int) ~doc:"N Run basic test N"
+      and fuzz_test =
+        flag
+          "--fuzz-test"
+          (optional string)
+          ~doc:"CONFIG Run fuzz config: small, hazards, or coverage"
+      and seed = flag "--seed" (optional int) ~doc:"N Seed for --fuzz-test"
+      and insn_count =
+        flag
+          "--insn-count"
+          (optional int)
+          ~doc:
+            "N Instruction count for --fuzz-test; simulation stops after this many \
+             commits"
+      and emulator_trace =
+        flag
+          "--emulator-trace"
+          (optional string)
+          ~doc:"INFO Comma-separated trace info: 0-31,pc,insn"
+      and trace =
+        flag
+          "--trace"
+          (optional string)
+          ~doc:"INFO Comma-separated trace info: 0-31,pc,insn"
+      and view_waves =
+        flag
+          "--view-waves"
+          no_arg
+          ~doc:"Open the interactive waveform viewer after simulation"
+      and max_cycles =
+        flag
+          "--max-cycles"
+          (optional int)
+          ~doc:
+            "N Stop simulation if this many cycles are reached before insn-count commits"
+      in
+      fun () ->
+        let target =
+          match basic_test, fuzz_test, seed, insn_count with
+          | Some basic_test, None, None, None -> Debug_target.Basic basic_test
+          | None, Some name, Some seed, Some insn_count ->
+            Debug_target.Fuzz { name; seed; insn_count }
+          | Some _, Some _, _, _ ->
+            failwith "--basic-test and --fuzz-test are mutually exclusive"
+          | None, Some _, None, _ -> failwith "--seed is required with --fuzz-test"
+          | None, Some _, _, None -> failwith "--insn-count is required with --fuzz-test"
+          | Some _, None, Some _, _ | Some _, None, _, Some _ ->
+            failwith "--seed and --insn-count are only valid with --fuzz-test"
+          | None, None, _, _ ->
+            failwith "one of --basic-test or --fuzz-test must be specified"
+        in
+        let parse_trace_infos label = function
+          | None -> []
+          | Some value ->
+            (try Trace_info.parse value with
+             | exn -> failwithf "invalid %s: %s" label (Exn.to_string exn) ())
+        in
+        let emulator_trace = parse_trace_infos "emulator trace" emulator_trace in
+        let trace = parse_trace_infos "trace" trace in
+        let { memory; insn_count; description } = Debug_target.to_program target in
+        print_endline [%string "loaded %{description}"];
+        run_emulator_trace ~memory ~insn_count emulator_trace;
+        run_simulation ~memory ~insn_count ~max_cycles ~trace_infos:trace ~view_waves)
+;;
+
+let rtl_command =
+  Command.basic
+    ~summary:"Dump CPU RTL to a Verilog file"
+    Command.Let_syntax.(
+      let%map_open output_path = anon ("output-path" %: string) in
+      fun () ->
+        let scope = Scope.create ~flatten_design:false () in
+        let circuit =
+          let open Riscv_core in
+          let module Circuit = Circuit.With_interface (Cpu.I) (Cpu.O) in
+          Circuit.create_exn ~name:"cpu" (Cpu.create scope)
+        in
+        let database = Scope.circuit_database scope in
+        let rtl = Rtl.create ~database Verilog [ circuit ] in
+        let rtl_string = Rope.to_string (Rtl.full_hierarchy rtl) in
+        Out_channel.write_all output_path ~data:rtl_string)
+;;
 
 let () =
-  List.iter trace ~f:(fun i ->
-    print_s
-      [%message
-        "Instruction vs emulator"
-          (i : Riscvemulate.insn)
-          (Riscvemulate.current_pc_insn emulator : Riscvemulate.insn)];
-    print_s [%message "PC" (!(emulator.pc) : int32)];
-    Riscvemulate.step emulator;
-    print_s [%message "Reg" (emulator.regs.(3) : int32)];
-    print_endline "")
+  Command.group
+    ~summary:"Utilities for debugging and inspecting the CPU"
+    [ "debug", debug_command; "rtl", rtl_command ]
+  |> Command_unix.run
 ;;
-
-let sim, waves = Sim.Cpu.create ~memory ~config:(Cyclesim.Config.trace `Everything) Waves
-
-let _ =
-  for _ = 1 to 30 do
-    Sim.Cpu.cycle_external sim;
-    Cyclesim.cycle sim.sim;
-    (* Print outputs *)
-    Stdio.print_s
-      (Riscv_core.Cpu.O.sexp_of_t
-         (fun b -> sexp_of_int (Bits.to_int_trunc !b))
-         (Cyclesim.outputs sim.sim));
-    (* Print reg *)
-    Stdio.printf "%d\n\n" (Int32.to_int_exn (Sim.Cpu.regs sim).(3))
-  done
-;;
-
-(* let _ = Stdio.print_s (Hashtbl.sexp_of_t sexp_of_int32 sexp_of_int mem)
-let _ = Stdio.printf "mem b0: %d\n" (Riscvemulate.load ~memory:mem ~addr:Int32.zero ~size:2 ~extend:Riscvemulate.Unsigned |> Int32.to_int_exn) *)
-let term = true
-let _ = if term then Hardcaml_waveterm_interactive.run waves

@@ -11,6 +11,10 @@ type state =
   }
 [@@deriving sexp_of]
 
+let regs { regs; _ } = regs
+let pc { pc; _ } = !pc
+let memory { memory; _ } = memory
+
 (* Load a value from memory, extending as necessary to 32 bits *)
 let load ~memory ~addr ~size ~extend =
   (* Load necessary number of bytes *)
