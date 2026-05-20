@@ -30,8 +30,6 @@ let block_base_addr addr =
   drop_bottom ~width:bits_block_offset addr @: zero bits_block_offset
 ;;
 
-let block_base_word index = index @: zero bits_word_in_block
-
 let word_offset_addr word =
   uresize ~width:(addr_width - bits_word_offset) word @: zero bits_word_offset
 ;;
@@ -46,9 +44,7 @@ module Active_access = struct
     ; store_size : 'a [@bits 2]
     ; tag : 'a [@bits bits_tag]
     ; index : 'a [@bits bits_index]
-    ; word : 'a [@bits bits_word_index]
     ; base_addr : 'a [@bits addr_width]
-    ; base_word : 'a [@bits bits_word_index]
     }
   [@@deriving hardcaml]
 end
@@ -83,144 +79,119 @@ module Metadata = struct
 end
 
 module Writeback = struct
-  module O = struct
+  module I = struct
     type 'a t =
-      { read_addr : 'a [@bits bits_word_index]
-      ; to_mem : 'a Iface.Write_back.To_mem.t
-      ; done_ : 'a
+      { clocking : 'a Types.Clocking.t
+      ; start : 'a
+      (** Start streaming data out from [base_addr]. This signal is ignored until the last
+          beat is output, when [to_mem.last] is asserted. On that cycle, [start] must be
+          lowered, unless another access is ready for streaming (impossible without
+          pipelining tag lookups). *)
+      ; base_addr : 'a [@bits addr_width]
+      ; data_in : 'a [@bits bus_width]
+      ; dirty_in : 'a
+      ; ready : 'a
       }
     [@@deriving hardcaml]
   end
 
-  let create
-    scope
-    ~(clocking : _ Types.Clocking.t)
-    ~active
-    ~base_addr
-    ~base_word
-    ~data_in
-    ~dirty_in
-    ~ready
-    =
-    let%hw active_d = Types.Clocking.reg clocking active in
-    let%hw first_cycle = active &: ~:active_d in
-    let%hw awaiting = wire 1 in
-    let%hw pending_valid = wire 1 in
-    let%hw pending_dirty = wire 1 in
-    let%hw pending_data = wire bus_width in
-    let%hw pending_addr = wire addr_width in
-    let%hw word = wire bits_word_in_block in
-    let%hw issue_read = active &: ~:awaiting &: ~:pending_valid in
-    let%hw got_response = awaiting in
-    let%hw write_beat = pending_valid &: pending_dirty in
-    let%hw consume_pending = pending_valid &: (~:pending_dirty ||: ready) in
-    let%hw last_word = word ==:. words_per_block - 1 in
-    let%hw done_ = active &: consume_pending &: last_word in
-    awaiting
-    <-- Types.Clocking.reg
-          clocking
-          (active &: (issue_read ||: first_cycle &: ~:got_response &: ~:done_));
-    pending_valid
-    <-- Types.Clocking.reg
-          clocking
-          (active &: (got_response ||: (pending_valid &: ~:consume_pending) &: ~:done_));
-    pending_dirty
-    <-- Types.Clocking.reg
-          clocking
-          (mux2 active (mux2 got_response dirty_in pending_dirty) gnd);
-    pending_data
-    <-- Types.Clocking.reg
-          clocking
-          (mux2 active (mux2 got_response data_in pending_data) (zero bus_width));
-    pending_addr
-    <-- Types.Clocking.reg
-          clocking
-          (mux2
-             active
-             (mux2 got_response (base_addr +: word_offset_addr word) pending_addr)
-             (zero addr_width));
-    word
-    <-- Types.Clocking.reg
-          clocking
-          (mux2
-             active
-             (mux2
-                first_cycle
-                (zero bits_word_in_block)
-                (mux2 consume_pending (mux2 last_word word (word +:. 1)) word))
-             (zero bits_word_in_block));
-    ({ read_addr = base_word +: uresize ~width:bits_word_index word
+  module O = struct
+    type 'a t =
+      { read_addr : 'a [@bits addr_width]
+      ; to_mem : 'a Iface.Write_back.To_mem.t
+      }
+    [@@deriving hardcaml]
+  end
+
+  let create scope ({ clocking; start; base_addr; data_in; dirty_in; ready } : _ I.t) =
+    (* Increment word in block from when [start] is set through last word in
+       block. The cycle after [reading_last] will be when we are [done_], and
+       [start] asserted then will keep [do_read] high constantly. *)
+    let%hw reading_last = wire 1 in
+    let%hw word_done = ready ||: ~:dirty_in in
+    let%hw active =
+      Utils.sr ~set:start ~reset:(reading_last &&: word_done) ~style:`Mealy_set clocking
+    in
+    let%hw read_word_number =
+      Types.Clocking.reg_fb
+        clocking
+        ~width:bits_word_in_block
+        ~f:(fun w -> w +:. 1)
+        ~enable:(active &&: word_done)
+    in
+    reading_last <-- (read_word_number ==: ones bits_word_in_block);
+    let%hw read_addr = base_addr +: word_offset_addr read_word_number in
+    ({ read_addr = base_addr +: word_offset_addr read_word_number
      ; to_mem =
-         { data = pending_data
-         ; addr = pending_addr
-         ; write = write_beat
-         ; last = pending_valid &: last_word
+         (* All these outputs go one cycle after read. *)
+         { data = data_in
+         ; addr = Types.Clocking.reg clocking read_addr
+         ; write = dirty_in &: Types.Clocking.reg clocking active
+         ; last = Types.Clocking.reg clocking (active &: reading_last)
          }
-     ; done_
      }
      : _ O.t)
+  ;;
+
+  let hierarchical =
+    let module H = Hierarchy.In_scope (I) (O) in
+    H.hierarchical ~name:"writeback" create
   ;;
 end
 
 module Read_stream = struct
-  module O = struct
+  module I = struct
     type 'a t =
-      { read_addr : 'a [@bits bits_word_index]
-      ; to_l1 : 'a Iface.Read_block.From_mem.t
-      ; done_ : 'a
+      { clocking : 'a Types.Clocking.t
+      ; start : 'a
+      (** Start streaming data out from [base_addr]. This signal is ignored until the last
+          beat is output, when [done_] is asserted. On that cycle, [start] must be
+          lowered, unless another access is ready for streaming (impossible without
+          pipelining tag lookups). *)
+      ; base_addr : 'a [@bits addr_width]
+      ; data_in : 'a [@bits bus_width]
       }
     [@@deriving hardcaml]
   end
 
-  let create scope ~(clocking : _ Types.Clocking.t) ~active ~base_addr ~base_word ~data_in
-    =
-    let%hw active_d = Types.Clocking.reg clocking active in
-    let%hw first_cycle = active &: ~:active_d in
-    let%hw awaiting = wire 1 in
-    let%hw pending_valid = wire 1 in
-    let%hw pending_data = wire bus_width in
-    let%hw pending_addr = wire addr_width in
-    let%hw word = wire bits_word_in_block in
-    let%hw issue_read = active &: ~:awaiting &: ~:pending_valid in
-    let%hw got_response = awaiting in
-    let%hw last_word = word ==:. words_per_block - 1 in
-    let%hw done_ = active &: pending_valid &: last_word in
-    awaiting
-    <-- Types.Clocking.reg
-          clocking
-          (active &: (issue_read ||: first_cycle &: ~:got_response &: ~:done_));
-    pending_valid <-- Types.Clocking.reg clocking (active &: got_response &: ~:done_);
-    pending_data
-    <-- Types.Clocking.reg
-          clocking
-          (mux2 active (mux2 got_response data_in pending_data) (zero bus_width));
-    pending_addr
-    <-- Types.Clocking.reg
-          clocking
-          (mux2
-             active
-             (mux2 got_response (base_addr +: word_offset_addr word) pending_addr)
-             (zero addr_width));
-    word
-    <-- Types.Clocking.reg
-          clocking
-          (mux2
-             active
-             (mux2
-                first_cycle
-                (zero bits_word_in_block)
-                (mux2 pending_valid (mux2 last_word word (word +:. 1)) word))
-             (zero bits_word_in_block));
-    ({ read_addr = base_word +: uresize ~width:bits_word_index word
+  module O = struct
+    type 'a t =
+      { read_addr : 'a [@bits addr_width]
+      ; to_l1 : 'a Iface.Read_block.From_mem.t
+      }
+    [@@deriving hardcaml]
+  end
+
+  let create scope ({ clocking; start; base_addr; data_in } : _ I.t) =
+    let%hw base_addr = Types.Clocking.cut_through_reg clocking ~enable:start base_addr in
+    (* Increment word in block from when [start] is set through last word in
+       block. The cycle after [reading_last] will be when we are [done_], and
+       [start] asserted then will keep [do_read] high constantly. *)
+    let%hw reading_last = wire 1 in
+    let%hw do_read = Utils.sr ~set:start ~reset:reading_last ~style:`Mealy_set clocking in
+    let%hw read_word_number =
+      Types.Clocking.reg_fb
+        clocking
+        ~width:bits_word_in_block
+        ~f:(fun w -> w +:. 1)
+        ~enable:do_read
+    in
+    reading_last <-- (read_word_number ==: ones bits_word_in_block);
+    let%hw read_addr = base_addr +: word_offset_addr read_word_number in
+    ({ read_addr
      ; to_l1 =
-         { data = pending_data
-         ; addr = pending_addr
-         ; valid = pending_valid
-         ; last = pending_valid &: last_word
+         { data = data_in
+         ; addr = Types.Clocking.reg clocking read_addr
+         ; valid = Types.Clocking.reg clocking do_read
+         ; last = Types.Clocking.reg clocking reading_last
          }
-     ; done_
      }
      : _ O.t)
+  ;;
+
+  let hierarchical =
+    let module H = Hierarchy.In_scope (I) (O) in
+    H.hierarchical ~name:"read_stream" create
   ;;
 end
 
@@ -242,9 +213,7 @@ let create
     ; store_size = write_from_l1.store_size
     ; tag = extract_tag addr
     ; index = extract_index addr
-    ; word = extract_word addr
     ; base_addr = block_base_addr addr
-    ; base_word = block_base_word (extract_index addr)
     }
   in
   let%hw.Active_access.Of_signal active_access = Active_access.Of_signal.wires () in
@@ -256,78 +225,59 @@ let create
   Active_access.Of_signal.assign
     active_access
     (Active_access.map next_access ~f:(Types.Clocking.reg clocking));
-  let%hw tag_write_enable = wire 1 in
-  let%hw tag_write_valid = wire 1 in
-  let tag_write_data =
-    Metadata.Of_signal.pack { valid = tag_write_valid; tag = active_access.tag }
-  in
-  let%hw.Metadata.Of_signal read_metadata =
-    let mem =
-      Ram.create
-        ~collision_mode:Write_before_read
-        ~size:num_sets
-        ~write_ports:
-          [| { write_clock = clocking.clock
-             ; write_enable = tag_write_enable
-             ; write_address = active_access.index
-             ; write_data = tag_write_data
-             }
-          |]
-        ~read_ports:
-          [| { read_clock = clocking.clock
-             ; read_enable = vdd
-             ; read_address = extract_index next_access.addr
-             }
-          |]
-        ~name:"tags"
-        ()
-    in
-    Metadata.Of_signal.unpack mem.(0)
-  in
+  let%hw.Metadata.Of_signal read_metadata = Metadata.Of_signal.wires () in
   let%hw tag_match = read_metadata.valid &&: (read_metadata.tag ==: active_access.tag) in
-  let metadata_valid = read_metadata.valid in
   let%hw request_valid = active_valid &&: (active_access.load ||: active_access.store) in
-  let%hw writing_back = request_valid &&: metadata_valid &&: ~:tag_match in
-  let%hw filling = request_valid &&: ~:metadata_valid in
-  let%hw stream_active = request_valid &&: active_access.load &&: tag_match in
+  (* If another block is there, do writeback; if/when empty, fill from mem; when done filling, stream block out or perform store. *)
+  let%hw writing_back = request_valid &&: read_metadata.valid &&: ~:tag_match in
+  let%hw filling = request_valid &&: ~:(read_metadata.valid) in
+  let%hw load_hit = request_valid &&: active_access.load &&: tag_match in
   let%hw store_hit = request_valid &&: active_access.store &&: tag_match in
+  (* Loaded word and dirty bit for the current access. Data memory is accessed
+     beginning the cycle after the tag memory, with the accessed address always
+     coming from [active_acess] (not [next_access]). So this data isn't valid
+     until a cycle after [load_hit], [store_hit], or [writing_back] triggers
+     the data read. *)
+  let%hw loaded_word = wire bus_width in
+  let%hw loaded_dirty = wire 1 in
+  (* Write back any dirty words of valid but not matching block. *)
   let%hw eviction_base_addr =
     read_metadata.tag @: active_access.index @: zero bits_block_offset
   in
-  let%hw eviction_base_word = block_base_word active_access.index in
-  let%hw loaded_word = wire bus_width in
-  let%hw loaded_dirty = wire 1 in
+  let%hw writeback_done = wire 1 in
   let writeback =
-    Writeback.create
-      scope
-      ~clocking
-      ~active:writing_back
-      ~base_addr:eviction_base_addr
-      ~base_word:eviction_base_word
-      ~data_in:loaded_word
-      ~dirty_in:loaded_dirty
-      ~ready:write_from_mem.ready
+    Writeback.hierarchical
+      ~scope
+      { clocking
+      ; start = writing_back &&: ~:writeback_done
+      ; base_addr = eviction_base_addr
+      ; data_in = loaded_word
+      ; dirty_in = loaded_dirty
+      ; ready = write_from_mem.ready
+      }
   in
-  let read_stream =
-    Read_stream.create
-      scope
-      ~clocking
-      ~active:stream_active
-      ~base_addr:active_access.base_addr
-      ~base_word:active_access.base_word
-      ~data_in:loaded_word
-  in
-  let writeback_done = writeback.done_ in
+  writeback_done <-- (writeback.to_mem.last &&: write_from_mem.ready);
+  (* Fill just forwards data from [read_from_mem] to data mem. *)
   let%hw fill_done = read_from_mem.valid &&: read_from_mem.last in
-  access_done <-- (store_hit ||: read_stream.done_);
-  let%hw data_read_addr =
-    mux2
-      writing_back
-      writeback.read_addr
-      (mux2 stream_active read_stream.read_addr next_access.word)
+  (* Stream block to L1 on load hit. *)
+  let read_stream =
+    Read_stream.hierarchical
+      ~scope
+      { clocking
+      ; start = load_hit &&: ~:access_done
+      ; base_addr = active_access.base_addr
+      ; data_in = loaded_word
+      }
   in
-  let%hw dirty_read_addr = mux2 writing_back writeback.read_addr next_access.word in
-  let store_word =
+  (* Store hit first reads word, then overwrites with updated data/dirty. We
+     can have new [active_access] while doing update, though, as updates never
+     happen on the first cycle of access (haven't read data from memory yet).
+     So we can accept a store every cycle if they all hit. Essentially is a
+     3-stage pipeline: tag lookup, then read from data memory (or stall for
+     miss), then do update. Because update will always occur the cycle after
+     [store_hit], we can accept new access on that cycle, even though data
+     won't be written until the end of the following cycle. *)
+  let%hw updated_word =
     let original = split_lsb ~part_width:8 ~exact:true loaded_word in
     let overwrite_bytes =
       Iface.Write_through.to_bytes
@@ -336,21 +286,58 @@ let create
         ; store_data = active_access.store_data
         ; store_size = active_access.store_size
         }
+      |> List.map ~f:(With_valid.map ~f:(Types.Clocking.reg clocking))
     in
     List.map2_exn overwrite_bytes original ~f:(fun { valid; value } byte ->
       mux2 valid value byte)
     |> concat_lsb
   in
-  let%hw data_write_enable = read_from_mem.valid ||: store_hit in
-  let%hw data_write_addr =
-    mux2 read_from_mem.valid (extract_word read_from_mem.addr) active_access.word
+  let%hw store_write = Types.Clocking.reg clocking store_hit in
+  (* Read data based on status of active access. *)
+  let%hw data_read_addr =
+    mux2 writing_back writeback.read_addr
+    @@ mux2 load_hit read_stream.read_addr
+    @@ (* Store hit *)
+    active_access.addr
   in
-  let%hw data_write_value = mux2 read_from_mem.valid read_from_mem.data store_word in
-  let dirty_write_enable = data_write_enable in
-  let dirty_write_addr = data_write_addr in
-  let dirty_write_value = mux2 read_from_mem.valid gnd vdd in
-  tag_write_enable <-- (writeback_done ||: fill_done);
-  tag_write_valid <-- ~:writeback_done;
+  access_done <-- (store_hit ||: read_stream.to_l1.last);
+  (* Write data for cahce line fill or store. *)
+  let%hw data_write_enable = read_from_mem.valid ||: store_write in
+  let%hw data_write_addr =
+    mux2
+      read_from_mem.valid
+      read_from_mem.addr
+      (Types.Clocking.reg clocking active_access.addr)
+  in
+  let%hw data_write_value = mux2 store_write updated_word read_from_mem.data in
+  (* Update tag/valid when we finish bringing in new block or evicting old. *)
+  (* TODO: since data mem is Write_before_read (for store followed immediately by load), we're wasting a cycle here not reading data until the cycle after [fill_done], when tag is updated. *)
+  (* TODO: i suppose same is true for writeback_done. once mem is accepting last beat, can move on to something else. *)
+  let%hw tag_write_enable = writeback_done ||: fill_done in
+  let%hw tag_write_valid = ~:writeback_done in
+  let tag_mem =
+    Ram.create
+      ~collision_mode:Write_before_read
+      ~size:num_sets
+      ~write_ports:
+        [| { write_clock = clocking.clock
+           ; write_enable = tag_write_enable
+           ; write_address = active_access.index
+           ; write_data =
+               Metadata.Of_signal.pack
+                 { valid = tag_write_valid; tag = active_access.tag }
+           }
+        |]
+      ~read_ports:
+        [| { read_clock = clocking.clock
+           ; read_enable = vdd
+           ; read_address = extract_index next_access.addr
+           }
+        |]
+      ~name:"l2_tags"
+      ()
+  in
+  Metadata.Of_signal.(assign read_metadata (unpack tag_mem.(0)));
   let data_mem =
     Ram.create
       ~collision_mode:Write_before_read
@@ -358,17 +345,17 @@ let create
       ~write_ports:
         [| { write_clock = clocking.clock
            ; write_enable = data_write_enable
-           ; write_address = data_write_addr
+           ; write_address = extract_word data_write_addr
            ; write_data = data_write_value
            }
         |]
       ~read_ports:
         [| { read_clock = clocking.clock
            ; read_enable = vdd
-           ; read_address = data_read_addr
+           ; read_address = extract_word data_read_addr
            }
         |]
-      ~name:"data"
+      ~name:"l2_data"
       ()
   in
   let dirty_mem =
@@ -377,23 +364,26 @@ let create
       ~size:num_words
       ~write_ports:
         [| { write_clock = clocking.clock
-           ; write_enable = dirty_write_enable
-           ; write_address = dirty_write_addr
-           ; write_data = dirty_write_value
+           ; write_enable = data_write_enable
+           ; write_address = extract_word data_write_addr
+           ; write_data = store_write
            }
         |]
       ~read_ports:
         [| { read_clock = clocking.clock
            ; read_enable = vdd
-           ; read_address = dirty_read_addr
+           ; read_address = extract_word data_read_addr
            }
         |]
-      ~name:"dirty"
+      ~name:"l2_dirty"
       ()
   in
   loaded_word <-- data_mem.(0);
   loaded_dirty <-- dirty_mem.(0);
-  ({ write_to_l1 = { store_ready = store_hit }
+  ({ write_to_l1 =
+       { (* This && is an ugly hack around the fact that we only have one ready bit, but expose two separate interfaces. Don't want to say we're accepting a store when we're actually accepting a load. *)
+         store_ready = take_incoming &&: next_access.store
+       }
    ; read_to_l1 = read_stream.to_l1
    ; write_to_mem = writeback.to_mem
    ; read_to_mem = { addr = active_access.addr; load = filling }

@@ -146,16 +146,22 @@ let run_emulator_trace ~memory ~insn_count trace_infos =
     done)
 ;;
 
-let run_simulation ~memory ~insn_count ~max_cycles ~trace_infos ~view_waves =
+let run_simulation ~memory ~insn_count ~max_cycles ~extra_cycles ~trace_infos ~view_waves =
   let sim = create_sim ~memory:(Hashtbl.copy memory) ~view_waves in
   let committed = ref 0 in
   let cycle = ref 0 in
   let cycle_limit = Option.value max_cycles ~default:Int.max_value in
-  while !committed < insn_count && !cycle < cycle_limit do
+  let committed_cycle_limit = ref None in
+  while
+    !cycle < cycle_limit
+    && !cycle < Option.value !committed_cycle_limit ~default:Int.max_value
+  do
     Int.incr cycle;
     print_hw_trace ~cycle:!cycle sim.cpu trace_infos;
     if Option.is_some (Sim.Cpu.commit_pc sim.cpu) then Int.incr committed;
-    Sim.Cpu.cycle sim.cpu
+    Sim.Cpu.cycle sim.cpu;
+    if !committed >= insn_count && Option.is_none !committed_cycle_limit
+    then committed_cycle_limit := Some (!cycle + extra_cycles)
   done;
   let max_cycles_suffix =
     match max_cycles with
@@ -203,6 +209,11 @@ let debug_command =
           "--view-waves"
           no_arg
           ~doc:"Open the interactive waveform viewer after simulation"
+      and extra_cycles =
+        flag
+          "--extra-cycles"
+          (optional_with_default 0 int)
+          ~doc:"N Extra cycles to run at the end (e.g., for memory to flush)"
       and max_cycles =
         flag
           "--max-cycles"
@@ -236,7 +247,13 @@ let debug_command =
         let { memory; insn_count; description } = Debug_target.to_program target in
         print_endline [%string "loaded %{description}"];
         run_emulator_trace ~memory ~insn_count emulator_trace;
-        run_simulation ~memory ~insn_count ~max_cycles ~trace_infos:trace ~view_waves)
+        run_simulation
+          ~memory
+          ~insn_count
+          ~max_cycles
+          ~extra_cycles
+          ~trace_infos:trace
+          ~view_waves)
 ;;
 
 let rtl_command =

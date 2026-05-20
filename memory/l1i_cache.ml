@@ -122,7 +122,7 @@ let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
   let%hw word_offset = sel_bottom ~width:bits_word_offset active_pc in
   let%hw insn_value = insn_from_word ~word:loaded_word ~word_offset in
   update_tag <-- (miss &&: read_from_mem.valid &&: read_from_mem.last);
-  ({ read_to_mem = { addr = active_pc; load = miss }
+  ({ read_to_mem = { addr = active_pc; load = miss &&: ~:update_tag }
    ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }
    }
    : _ O.t)

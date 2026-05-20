@@ -221,7 +221,7 @@ let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _
        ; store_size = active_access.size
        ; store_data = active_access.store_data
        }
-   ; read_to_mem = { addr = active_access.addr; load = load_miss }
+   ; read_to_mem = { addr = active_access.addr; load = load_miss &&: ~:update_tag }
    ; to_pipeline = { load_data; stall }
    }
    : _ O.t)

@@ -104,8 +104,9 @@ let test_program ~program ~insn_count =
     Sim.Cpu.cycle_insn sim;
     Riscvemulate.step emulator
   done;
+  Sim.Cpu.flush sim;
   let mem_diff =
-    Hashtbl.merge emulator.memory sim.memory ~f:(fun ~key:_ -> function
+    Hashtbl.merge emulator.memory (Sim.Cpu.memory sim) ~f:(fun ~key:_ -> function
       | `Both (a, b) -> if a <> b then Some (a, b) else None
       | `Left a -> if a <> 0 then Some (a, 0) else None
       | `Right b -> if 0 <> b then Some (0, b) else None)
@@ -143,6 +144,11 @@ let check_equivalence ?(filter = Fn.const true) ~reg_max { seed; insn_count; _ }
   match test_program ~program ~insn_count:(insn_count + 5) with
   | None -> ()
   | Some (correct_regs, sim_regs, mem_diff) ->
+    let mem_diff =
+      if Hashtbl.length mem_diff > 50
+      then [%message "" ~length:(Hashtbl.length mem_diff : int)]
+      else [%message "" ~em_then_sim:(mem_diff : (int * int) Int32.Table.t)]
+    in
     Error.raise_s
       [%message
         "hardware/emulator mismatch"
@@ -151,5 +157,5 @@ let check_equivalence ?(filter = Fn.const true) ~reg_max { seed; insn_count; _ }
           (trace : Riscvemulate.insn list)
           (correct_regs : int32 array)
           (sim_regs : int32 array)
-          ~mem_diff_entries:(Hashtbl.length mem_diff : int)]
+          (mem_diff : Sexp.t)]
 ;;

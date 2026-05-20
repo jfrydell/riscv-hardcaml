@@ -40,15 +40,15 @@ module Make (Config : Config) = struct
     let%hw_list fair_valid_reqs =
       ensure_fairness scope ~clocking ~req_bits:valid_reqs ~rotate:(Config.resp_done resp)
     in
-    (* Select a new requestor when a response arrives, or nobody is requesting. *)
+    let%hw_list selected_valid = List.map reqs ~f:(fun _ -> wire 1) in
+    (* Select a new requestor when a response arrives, or if we weren't selecting anyone on the previous cycle. *)
     let%hw select_new =
-      Config.resp_done resp ||: ~:(tree ~arity:3 ~f:(reduce ~f:( |: )) valid_reqs)
+      Config.resp_done resp
+      ||: ~:(tree ~arity:3 ~f:(reduce ~f:( |: )) selected_valid
+             |> Types.Clocking.reg clocking)
     in
-    let%hw_list selected_valid =
-      List.map
-        fair_valid_reqs
-        ~f:(Types.Clocking.cut_through_reg clocking ~enable:select_new)
-    in
+    List.iter2_exn selected_valid fair_valid_reqs ~f:(fun selected valid ->
+      selected <-- Types.Clocking.cut_through_reg clocking ~enable:select_new valid);
     (* Request is priority-selected from valid ones. *)
     let reqs_with_valid =
       List.map2_exn reqs selected_valid ~f:(fun value valid ->
@@ -60,7 +60,7 @@ module Make (Config : Config) = struct
        until we get a response. *)
     let masks_with_valid =
       List.mapi selected_valid ~f:(fun i valid ->
-        { With_valid.value = zero (List.length reqs - 1 - i) @: vdd @: zero i; valid })
+        { With_valid.value = of_int_trunc ~width:(List.length reqs) (1 lsl i); valid })
     in
     let%hw resp_mask =
       Types.Clocking.reg clocking (priority_select masks_with_valid).value
