@@ -28,11 +28,24 @@ let insn_from_word ~word ~word_offset =
   log_shift ~f:srl ~by:(word_offset @: of_bit_string "000") word |> sel_bottom ~width:32
 ;;
 
+module From_pipe = struct
+  type 'a t = { pc : 'a [@bits addr_width] } [@@deriving hardcaml]
+end
+
+module To_pipe = struct
+  type 'a t =
+    { insn : 'a [@bits 32]
+    ; pc : 'a [@bits addr_width] (** Address of the instruction that was just fetched. *)
+    ; valid : 'a
+    }
+  [@@deriving hardcaml]
+end
+
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; pc : 'a [@bits addr_width]
     ; read_from_mem : 'a Iface.Read_block.From_mem.t
+    ; from_pipeline : 'a From_pipe.t
     }
   [@@deriving hardcaml]
 end
@@ -40,8 +53,7 @@ end
 module O = struct
   type 'a t =
     { read_to_mem : 'a Iface.Read_block.To_mem.t
-    ; insn : 'a With_valid.t [@bits 32]
-    ; pc : 'a [@bits 32] (** PC that we are currently fetching or outputting on [insn]. *)
+    ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
 end
@@ -54,7 +66,7 @@ module Metadata = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ clocking; pc; read_from_mem } : _ I.t) =
+let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
   let%hw miss = wire 1 in
   let%hw active_pc = wire addr_width in
   let%hw next_pc = mux2 miss active_pc pc in
@@ -111,8 +123,7 @@ let create scope ({ clocking; pc; read_from_mem } : _ I.t) =
   let%hw insn_value = insn_from_word ~word:loaded_word ~word_offset in
   update_tag <-- (miss &&: read_from_mem.valid &&: read_from_mem.last);
   ({ read_to_mem = { addr = active_pc; load = miss }
-   ; insn = { valid = tag_match; value = insn_value }
-   ; pc = active_pc
+   ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }
    }
    : _ O.t)
 ;;

@@ -6,21 +6,16 @@ open Signal
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; read_from_insn_mem : 'a Memory.Iface.Read_block.From_mem.t
-    (** Response from memory for L1 I-cache read. *)
-    ; read_from_data_mem : 'a Memory.Iface.Read_block.From_mem.t
-    (** Response from memory for L1 D-cache read. *)
-    ; write_from_data_mem : 'a Memory.Iface.Write_through.From_mem.t
-    (** Response from memory for L1 D-cache write-through. *)
+    ; from_l1d : 'a Memory.L1d_cache.To_pipe.t
+    ; from_l1i : 'a Memory.L1i_cache.To_pipe.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { read_to_insn_mem : 'a Memory.Iface.Read_block.To_mem.t
-    ; read_to_data_mem : 'a Memory.Iface.Read_block.To_mem.t
-    ; write_to_data_mem : 'a Memory.Iface.Write_through.To_mem.t
+    { to_l1i : 'a Memory.L1i_cache.From_pipe.t
+    ; to_l1d : 'a Memory.L1d_cache.From_pipe.t
     ; commit_pc : 'a With_valid.t [@bits 32]
     (** The PC of the instruction committing this cycle, when valid. *)
     }
@@ -159,20 +154,16 @@ let create scope (i : _ I.t) =
     mux2 branch_execute branch_pc (mux2 (stall F) pc_reg (pc_reg +:. 4))
   in
   pc_reg <-- Types.Clocking.reg i.clocking pc_to_fetch;
-  let%hw.Memory.L1i_cache.O.Of_signal icache =
-    Memory.L1i_cache.hierarchical
-      ~scope
-      { clocking = i.clocking; pc = pc_to_fetch; read_from_mem = i.read_from_insn_mem }
-  in
   let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
+  let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i = { pc = pc_to_fetch } in
   (* Fetch is stalled if the PC missed in the cache. If a branch occurred
      during miss handling, the I-cache gives [valid] once the miss is handled,
      and we must ignore. *)
   (* TODO: don't love the comparison here, and really feels like this should be simplifiable. *)
-  stall_fetch <-- (~:(icache.insn.valid) ||: (icache.pc <>: pc_reg));
+  stall_fetch <-- (~:(i.from_l1i.valid) ||: (i.from_l1i.pc <>: pc_reg));
   let insn =
     forward_pipeline
-      ~signal:icache.insn.value
+      ~signal:i.from_l1i.insn
       ~stage:F
       ~default:(of_hex ~width:32 "00000013")
       ()
@@ -252,23 +243,16 @@ let create scope (i : _ I.t) =
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
   (* Memory stage. Inputs are latched internally. *)
-  let%hw.Memory.Memory_stage.O.Of_signal mem =
-    Memory.Memory_stage.hierarchical
-      ~scope
-      { clocking = i.clocking
-      ; from_pipeline =
-          { addr = alu_result.result
-          ; load = opcode X ==: Riscv.Op.load
-          ; store = opcode X ==: Riscv.Op.store
-          ; size = (funct3 X).:[1, 0]
-          ; sign_extend = ~:((funct3 X).:(2))
-          ; store_data = rs2val X
-          }
-      ; read_from_mem = i.read_from_data_mem
-      ; write_from_mem = i.write_from_data_mem
-      }
+  let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
+    { addr = alu_result.result
+    ; load = opcode X ==: Riscv.Op.load
+    ; store = opcode X ==: Riscv.Op.store
+    ; size = (funct3 X).:[1, 0]
+    ; sign_extend = ~:((funct3 X).:(2))
+    ; store_data = rs2val X
+    }
   in
-  stall_memory <-- mem.stall;
+  stall_memory <-- i.from_l1d.stall;
   (* Pass written value to M for writeback and bypassing, then that or loaded value to W. *)
   rdval M
   <-- forward_pipeline
@@ -284,7 +268,7 @@ let create scope (i : _ I.t) =
         M;
   rdval W
   <-- forward_pipeline
-        ~signal:(mux2 (opcode M ==: Riscv.Op.load) mem.load_data (rdval M))
+        ~signal:(mux2 (opcode M ==: Riscv.Op.load) i.from_l1d.load_data (rdval M))
         ~stage:M
         ()
         W;
@@ -321,12 +305,7 @@ let create scope (i : _ I.t) =
   in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
   let%hw commit_valid = is_insn W &&: ~:(stall W) in
-  O.
-    { read_to_insn_mem = icache.read_to_mem
-    ; read_to_data_mem = mem.read_to_mem
-    ; write_to_data_mem = mem.write_to_mem
-    ; commit_pc = { valid = commit_valid; value = pc W }
-    }
+  O.{ to_l1i; to_l1d; commit_pc = { valid = commit_valid; value = pc W } }
 ;;
 
 let hierarchical =

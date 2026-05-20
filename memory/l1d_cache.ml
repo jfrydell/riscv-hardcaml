@@ -80,6 +80,17 @@ module From_pipe = struct
   [@@deriving hardcaml]
 end
 
+(** Result of access to pipeline. *)
+module To_pipe = struct
+  type 'a t =
+    { load_data : 'a [@bits 32]
+    ; stall : 'a
+    (** The memory stage is stalled. Output data is invalid, and any access from the
+        pipeline is ignored. *)
+    }
+  [@@deriving hardcaml]
+end
+
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
@@ -94,10 +105,7 @@ module O = struct
   type 'a t =
     { write_to_mem : 'a Iface.Write_through.To_mem.t
     ; read_to_mem : 'a Iface.Read_block.To_mem.t
-    ; load_data : 'a [@bits 32]
-    ; stall : 'a
-    (** The memory stage is stalled. Output data is invalid, and any access from the
-        pipeline is ignored. *)
+    ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
 end
@@ -214,8 +222,7 @@ let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _
        ; store_data = active_access.store_data
        }
    ; read_to_mem = { addr = active_access.addr; load = load_miss }
-   ; load_data
-   ; stall
+   ; to_pipeline = { load_data; stall }
    }
    : _ O.t)
 ;;
