@@ -18,6 +18,7 @@ depends: [
   "hardcaml_circuits"
   "hardcaml_waveterm"
   "hardcaml_step_testbench"
+  "hardcaml_test_harness"
   "odoc" {with-doc}
 ]
 build: [

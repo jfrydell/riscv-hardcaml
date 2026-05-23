@@ -83,19 +83,18 @@ let require_same_memory expected actual =
   in
   List.iter keys ~f:(fun addr ->
     let expected =
-      Hashtbl.find expected addr |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
+      Hashtbl.find expected addr
+      |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
     in
     let actual =
-      Hashtbl.find actual addr |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
+      Hashtbl.find actual addr
+      |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
     in
     if not (Bits.equal expected actual)
     then
       raise_s
         [%message
-          "memory mismatch"
-            (addr : int)
-            (expected : Bits.Hex.t)
-            (actual : Bits.Hex.t)])
+          "memory mismatch" (addr : int) (expected : Bits.Hex.t) (actual : Bits.Hex.t)])
 ;;
 
 let spawn_write_through_handler ~mem ~delay_cycles =
@@ -168,8 +167,7 @@ let%test_unit "write-through emitter reaches handler and updates memory" =
         ()
     in
     Step.wait_for writer);
-  require_mem_word mem ~addr:0x100 ~expected:(bits_of_hex "1122beefdeadbeef")
-  ;
+  require_mem_word mem ~addr:0x100 ~expected:(bits_of_hex "1122beefdeadbeef");
   require_same_memory model_mem mem
 ;;
 
@@ -194,7 +192,8 @@ let%test_unit "read-block emitter receives streamed block from handler" =
     let%bind.Step reader =
       spawn_read_block_emitter
         ~model_mem
-        ~events:(Sequence.of_list [ Emitters.Read_block.Event.Read { addr = base_addr + 4 } ])
+        ~events:
+          (Sequence.of_list [ Emitters.Read_block.Event.Read { addr = base_addr + 4 } ])
         ()
     in
     Step.wait_for reader)

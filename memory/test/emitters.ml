@@ -15,8 +15,8 @@ let block_base_addr addr = addr land lnot (block_size_bytes - 1)
 
 let address_generator ?(size = 0) () =
   let open Quickcheck.Generator.Let_syntax in
-  let%bind block = Int.gen_incl 0 3
-  and word = Int.gen_incl 0 (words_per_block - 1) in
+  let%bind way_number = Int.gen_incl 0 3
+  and word = Int.gen_incl 0 ((2 * words_per_block) - 1) in
   let%map byte =
     match size with
     | 0 -> Int.gen_incl 0 (word_size_bytes - 1)
@@ -24,7 +24,7 @@ let address_generator ?(size = 0) () =
     | 2 -> Quickcheck.Generator.of_list [ 0; 4 ]
     | size -> raise_s [%message "unsupported store size" (size : int)]
   in
-  (block * conflicting_block_stride) + (word * word_size_bytes) + byte
+  (way_number * conflicting_block_stride) + (word * word_size_bytes) + byte
 ;;
 
 let apply_write_through_store ~original ~addr ~store_data ~store_size =
@@ -46,35 +46,6 @@ let apply_write_through_store ~original ~addr ~store_data ~store_size =
       Bits.of_int_trunc ~width:8 byte))
   |> Bits.concat_lsb
 ;;
-
-module Write_back = struct
-  module I = Memory.Iface.Write_back.To_mem
-  module O = Memory.Iface.Write_back.From_mem
-  module Step = Hardcaml_step_testbench.Monadic.Functional.Cyclesim.Make (I) (O)
-
-  module Event = struct
-    type t = Delay of int [@@deriving sexp_of]
-
-    let quickcheck_generator =
-      Quickcheck.Generator.map (Int.gen_incl 0 20) ~f:(fun cycles -> Delay cycles)
-    ;;
-  end
-
-  let merge_inputs = Step.merge_inputs
-
-  let spawn ?model_mem ~events ~inputs ~outputs () =
-    let _ = model_mem in
-    let rec loop events =
-      match Sequence.next events with
-      | None -> Step.return ()
-      | Some (Event.Delay cycles, events) ->
-        check_nonnegative_delay cycles;
-        let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:cycles in
-        loop events
-    in
-    Step.spawn_io ~inputs ~outputs (fun _ -> loop events)
-  ;;
-end
 
 module Read_block = struct
   module I = Memory.Iface.Read_block.To_mem
@@ -102,52 +73,95 @@ module Read_block = struct
 
   let merge_inputs = Step.merge_inputs
 
+  (** We require that a read returns a value that was in memory on some cycle between the
+      read starting and completing. This module tracks the values held by a block over
+      time. *)
+  module Block_values = struct
+    module Bits_set = Set.Make_plain (Bits)
+
+    type t = Bits_set.t Int.Map.t
+
+    let from_mem ~mem ~addr =
+      let base = block_base_addr addr in
+      List.init words_per_block ~f:(fun i ->
+        let addr = base + (word_size_bytes * i) in
+        ( addr
+        , Hashtbl.find mem addr
+          |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
+          |> Bits_set.singleton ))
+      |> Int.Map.of_alist_exn
+    ;;
+
+    let union =
+      Map.merge ~f:(fun ~key -> function
+        | `Both (v1, v2) -> Some (Set.union v1 v2)
+        | `Left _ | `Right _ ->
+          raise_s
+            [%message
+              "Block_values.union called with separate address blocks; key not contained \
+               in both"
+                (key : int)])
+    ;;
+
+    let union_mem t ~mem ~addr = from_mem ~mem ~addr |> union t
+  end
+
   let spawn ?model_mem ~events ~inputs ~outputs () =
     let zero = I.Of_bits.zero () in
-    let rec emit_read addr remaining_words =
+    let rec emit_read ?model_vals addr remaining_words =
       let%bind.Step outs =
         Step.cycle
           { addr = Bits.of_int_trunc ~width:Memory.Iface.addr_width addr
-          ; load = Bits.vdd
+          ; load =
+              Bits.of_bool (remaining_words > 1)
+              (* TODO: vdd would be fine if we could react to `last`
+                 combinationally, but since we read `before_edge` we won't know
+                 we're done until a cycle too late, at which point we've issued
+                 duplicate load. Can't use [outs.after_edge] to get current
+                 cycle's signal, as if it comes combinationally from the
+                 [Handlers.Read_block], that won't be incorporated due to task
+                 not running yet. Arguably this is an issue with the [Step]
+                 testbench framework as a whole, where one task can never see
+                 the output of anotehr from the same cycle. *)
           }
       in
-      (* Check after edge (current cycle) so we can disable load request once
-         [last] goes high.
-         TODO: maybe add [ready] signal to load and lower then; this is really
+      let model_vals =
+        Option.map2 model_mem model_vals ~f:(fun mem -> Block_values.union_mem ~mem ~addr)
+      in
+      (* TODO: maybe add [ready] signal to load and lower then; this is really
          holding until about to maybe accept duplicate, which is longer than
-         needed. *)
-      if Bits.to_bool outs.after_edge.valid
+         needed (I think doesn't fix above though). *)
+      if Bits.to_bool outs.before_edge.valid
       then (
-        (match model_mem with
+        (match model_vals with
          | None -> ()
-         | Some mem ->
+         | Some vals ->
            let expected_addr =
              block_base_addr addr + ((words_per_block - remaining_words) * word_size_bytes)
            in
-           let expected_data =
-             Hashtbl.find mem expected_addr
-             |> Option.value ~default:(Bits.zero Memory.Iface.cpu_bus_width)
-           in
-           let actual_data = outs.after_edge.data in
-           if not (Bits.equal outs.after_edge.data expected_data)
+           let expected_data = Map.find_exn vals expected_addr in
+           let actual_addr = Bits.to_int_trunc outs.before_edge.addr in
+           let actual_data = outs.before_edge.data in
+           if (not (Set.exists expected_data ~f:(Bits.equal outs.before_edge.data)))
+              || not (expected_addr = actual_addr)
            then
              raise_s
                [%message
                  "unexpected read data"
-                   (addr : int)
+                   (actual_addr : int)
                    (expected_addr : int)
                    (actual_data : Bits.Hex.t)
-                   (expected_data : Bits.Hex.t)]);
-        match Bits.to_bool outs.after_edge.last, remaining_words = 1 with
+                   (expected_data : Block_values.Bits_set.t)]);
+        match Bits.to_bool outs.before_edge.last, remaining_words = 1 with
         | true, true -> Step.return ()
-        | false, false -> emit_read addr (remaining_words - 1)
+        | false, false -> emit_read ?model_vals addr (remaining_words - 1)
         | cache_last, expected_last ->
           raise_s
             [%message
               "got incorrect number of words in load"
                 (cache_last : bool)
                 (expected_last : bool)])
-      else emit_read addr remaining_words
+      else emit_read ?model_vals addr remaining_words
     in
     let rec loop events =
       match Sequence.next events with
@@ -157,7 +171,13 @@ module Read_block = struct
         let%bind.Step () = Step.delay zero ~num_cycles:cycles in
         loop events
       | Some (Event.Read { addr }, events) ->
-        let%bind.Step () = emit_read addr words_per_block in
+        let%bind.Step () =
+          emit_read
+            ?model_vals:
+              (Option.map model_mem ~f:(fun mem -> Block_values.from_mem ~mem ~addr))
+            addr
+            words_per_block
+        in
         loop events
     in
     Step.spawn_io ~inputs ~outputs (fun _ -> loop events)
@@ -226,7 +246,7 @@ module Write_through = struct
     in
     let rec loop events =
       match Sequence.next events with
-      | None -> Step.return ()
+      | None -> Step.delay ~num_cycles:1 zero
       | Some (Event.Delay cycles, events) ->
         check_nonnegative_delay cycles;
         let%bind.Step () = Step.delay zero ~num_cycles:cycles in
