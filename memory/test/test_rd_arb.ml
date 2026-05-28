@@ -236,7 +236,7 @@ let%test_unit "larger random tests" =
         Emitters.Write_through.Event.t list
         * Emitters.Read_block.Event.t list
         * Emitters.Read_block.Event.t list]
-    ~trials:10
+    ~trials:20
     (access_generator ~writes:250 ~reads0:250 ~reads1:250)
     ~f:(fun (write_events, read0_events, read1_events) ->
       let mem, model_mem = with_memories () in

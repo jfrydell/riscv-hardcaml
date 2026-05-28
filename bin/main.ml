@@ -263,8 +263,13 @@ let rtl_command =
       let%map_open output_path = anon ("output-path" %: string) in
       fun () ->
         let scope = Scope.create ~flatten_design:false () in
+        (* TODO: configure system (for both RTL and debugging) *)
+        let module Cpu =
+          Riscv_system.Cpu.Make (struct
+            let caches = Riscv_system.Cpu.Cache_config.L2
+          end)
+        in
         let circuit =
-          let open Riscv_core in
           let module Circuit = Circuit.With_interface (Cpu.I) (Cpu.O) in
           Circuit.create_exn ~name:"cpu" (Cpu.create scope)
         in

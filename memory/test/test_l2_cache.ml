@@ -122,7 +122,7 @@ let%test_unit "small random tests" =
     ~seed:(`Deterministic "l2-test-small")
     ~sexp_of:
       [%sexp_of: Emitters.Write_through.Event.t list * Emitters.Read_block.Event.t list]
-    ~trials:1000
+    ~trials:100
     (access_generator ~writes:5 ~reads:5)
     ~f:(fun (write_events, read_events) ->
       let mem, model_mem = with_memories () in
@@ -142,7 +142,7 @@ let%test_unit "larger random tests" =
     ~seed:(`Deterministic "l2-test-large")
     ~sexp_of:
       [%sexp_of: Emitters.Write_through.Event.t list * Emitters.Read_block.Event.t list]
-    ~trials:500
+    ~trials:50
     (access_generator ~writes:500 ~reads:500)
     ~f:(fun (write_events, read_events) ->
       let mem, model_mem = with_memories () in

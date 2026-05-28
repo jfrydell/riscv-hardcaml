@@ -109,81 +109,123 @@ module Read_block = struct
     let union_mem t ~mem ~addr = from_mem ~mem ~addr |> union t
   end
 
-  let spawn ?model_mem ~events ~inputs ~outputs () =
-    let zero = I.Of_bits.zero () in
-    let rec emit_read ?model_vals addr remaining_words =
+  (* Emit a read, holding [load] high until there is only one word remaining.
+       (We could lower earlier; this ensures a 1-cycle delay event puts one
+       cycle between loads assuming the response is valid). *)
+  let rec emit_read addr remaining_words =
+    if remaining_words > 1
+    then (
       let%bind.Step outs =
         Step.cycle
           { addr = Bits.of_int_trunc ~width:Memory.Iface.addr_width addr
-          ; load =
-              Bits.of_bool (remaining_words > 1)
-              (* TODO: vdd would be fine if we could react to `last`
-                 combinationally, but since we read `before_edge` we won't know
-                 we're done until a cycle too late, at which point we've issued
-                 duplicate load. Can't use [outs.after_edge] to get current
-                 cycle's signal, as if it comes combinationally from the
-                 [Handlers.Read_block], that won't be incorporated due to task
-                 not running yet. Arguably this is an issue with the [Step]
-                 testbench framework as a whole, where one task can never see
-                 the output of anotehr from the same cycle. *)
+          ; load = Bits.vdd
           }
       in
-      let model_vals =
-        Option.map2 model_mem model_vals ~f:(fun mem -> Block_values.union_mem ~mem ~addr)
+      (* Ignore [last], as that must be for a prior emitted read. A bit of a
+         hack, but makes running this in a loop work. *)
+      if Bits.to_bool outs.before_edge.valid && not (Bits.to_bool outs.before_edge.last)
+      then emit_read addr (remaining_words - 1)
+      else emit_read addr remaining_words)
+    else Step.return ()
+  ;;
+
+  (** Update the set of modeled values each dispatched read in a queue could return. To be
+      called every cycle. *)
+  let update_dispatched_model ~model_mem ~dispatched_reads =
+    Queue.iter dispatched_reads ~f:(fun (addr, vals) ->
+      vals := Block_values.union_mem !vals ~mem:model_mem ~addr)
+  ;;
+
+  (** Check the value returned for the current read, and update dispatched reads each
+      cycle. *)
+  let rec check_read ~model_mem ~model_vals ~dispatched_reads addr remaining_words =
+    let%bind.Step outs = Step.cycle Step.input_hold in
+    update_dispatched_model ~model_mem ~dispatched_reads;
+    let model_vals = Block_values.union_mem ~mem:model_mem ~addr model_vals in
+    if Bits.to_bool outs.before_edge.valid
+    then (
+      let expected_addr =
+        block_base_addr addr + ((words_per_block - remaining_words) * word_size_bytes)
       in
-      (* TODO: maybe add [ready] signal to load and lower then; this is really
-         holding until about to maybe accept duplicate, which is longer than
-         needed (I think doesn't fix above though). *)
-      if Bits.to_bool outs.before_edge.valid
-      then (
-        (match model_vals with
-         | None -> ()
-         | Some vals ->
-           let expected_addr =
-             block_base_addr addr + ((words_per_block - remaining_words) * word_size_bytes)
-           in
-           let expected_data = Map.find_exn vals expected_addr in
-           let actual_addr = Bits.to_int_trunc outs.before_edge.addr in
-           let actual_data = outs.before_edge.data in
-           if (not (Set.exists expected_data ~f:(Bits.equal outs.before_edge.data)))
-              || not (expected_addr = actual_addr)
-           then
-             raise_s
-               [%message
-                 "unexpected read data"
-                   (actual_addr : int)
-                   (expected_addr : int)
-                   (actual_data : Bits.Hex.t)
-                   (expected_data : Block_values.Bits_set.t)]);
-        match Bits.to_bool outs.before_edge.last, remaining_words = 1 with
-        | true, true -> Step.return ()
-        | false, false -> emit_read ?model_vals addr (remaining_words - 1)
-        | cache_last, expected_last ->
-          raise_s
-            [%message
-              "got incorrect number of words in load"
-                (cache_last : bool)
-                (expected_last : bool)])
-      else emit_read ?model_vals addr remaining_words
+      let expected_data = Map.find_exn model_vals expected_addr in
+      let actual_addr = Bits.to_int_trunc outs.before_edge.addr in
+      let actual_data = outs.before_edge.data in
+      if (not (Set.exists expected_data ~f:(Bits.equal outs.before_edge.data)))
+         || not (expected_addr = actual_addr)
+      then
+        raise_s
+          [%message
+            "unexpected read data"
+              (actual_addr : int)
+              (expected_addr : int)
+              (actual_data : Bits.Hex.t)
+              (expected_data : Block_values.Bits_set.t)];
+      match Bits.to_bool outs.before_edge.last, remaining_words = 1 with
+      | true, true -> check_next_read ~model_mem_opt:(Some model_mem) ~dispatched_reads
+      | false, false ->
+        check_read ~model_mem ~model_vals ~dispatched_reads addr (remaining_words - 1)
+      | cache_last, expected_last ->
+        raise_s
+          [%message
+            "got incorrect number of words in load"
+              (cache_last : bool)
+              (expected_last : bool)])
+    else check_read ~model_mem ~model_vals ~dispatched_reads addr remaining_words
+
+  (** In a loop, dequeue a dispatched read and (if [model_mem_opt] is given) check its
+      returned value. *)
+  and check_next_read ~model_mem_opt ~dispatched_reads =
+    match model_mem_opt with
+    | Some model_mem ->
+      (match Queue.dequeue dispatched_reads with
+       | Some (addr, model_vals) ->
+         check_read
+           ~model_mem
+           ~model_vals:!model_vals
+           ~dispatched_reads
+           addr
+           words_per_block
+       | None ->
+         let%bind.Step _ = Step.cycle Step.input_hold in
+         update_dispatched_model ~model_mem ~dispatched_reads;
+         check_next_read ~model_mem_opt ~dispatched_reads)
+    | None ->
+      let _ = Queue.dequeue dispatched_reads in
+      let%bind.Step _ = Step.cycle Step.input_hold in
+      check_next_read ~model_mem_opt ~dispatched_reads
+  ;;
+
+  let spawn ?model_mem ~events ~inputs ~outputs () =
+    let zero = I.Of_bits.zero () in
+    (* Queue dispatched reads (addr and current mem states), to check return values. *)
+    let dispatched_reads = Queue.create () in
+    let dispatch_read ~addr ~model_mem =
+      match model_mem with
+      | Some model_mem ->
+        Queue.enqueue
+          dispatched_reads
+          (addr, ref (Block_values.from_mem ~mem:model_mem ~addr))
+      | None -> ()
     in
-    let rec loop events =
+    (* Issue reads. *)
+    let rec issue_loop events =
       match Sequence.next events with
       | None -> Step.delay zero ~num_cycles:1
       | Some (Event.Delay cycles, events) ->
         check_nonnegative_delay cycles;
         let%bind.Step () = Step.delay zero ~num_cycles:cycles in
-        loop events
+        issue_loop events
       | Some (Event.Read { addr }, events) ->
-        let%bind.Step () =
-          emit_read
-            ?model_vals:
-              (Option.map model_mem ~f:(fun mem -> Block_values.from_mem ~mem ~addr))
-            addr
-            words_per_block
-        in
-        loop events
+        dispatch_read ~model_mem ~addr;
+        let%bind.Step () = emit_read addr words_per_block in
+        issue_loop events
     in
-    Step.spawn_io ~inputs ~outputs (fun _ -> loop events)
+    (* Issue events while repeatedy check reads (and updating dispatched model each cycle). *)
+    Step.spawn_io ~inputs ~outputs (fun _ ->
+      let%bind.Step _ =
+        Step.spawn (fun _ -> check_next_read ~model_mem_opt:model_mem ~dispatched_reads)
+      in
+      issue_loop events)
   ;;
 end
 
