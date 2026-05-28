@@ -88,6 +88,9 @@ let%test_unit "write then read through l2 cache" =
       ()
   in
   run
+    (* ~waves_config: *)
+    (*   (Hardcaml_test_harness.Waves_config.to_file "/tmp/test.hardcaml_waveform.Z" *)
+    (*    |> Hardcaml_test_harness.Waves_config.with_extra_cycles_after_test ~n:1) *)
     (testbench
        ~mem
        ~model_mem
@@ -105,11 +108,11 @@ let access_generator ~writes ~reads =
   let%map write_events =
     Quickcheck.Generator.list_with_length
       writes
-      Emitters.Write_through.Event.quickcheck_generator
+      (Emitters.Write_through.Event.quickcheck_generator ~max_set:4)
   and read_events =
     Quickcheck.Generator.list_with_length
       reads
-      Emitters.Read_block.Event.quickcheck_generator
+      (Emitters.Read_block.Event.quickcheck_generator ~max_set:4)
   in
   write_events, read_events
 ;;

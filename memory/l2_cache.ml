@@ -386,7 +386,12 @@ let create
        }
    ; read_to_l1 = read_stream.to_l1
    ; write_to_mem = writeback.to_mem
-   ; read_to_mem = { addr = active_access.addr; load = filling }
+   ; read_to_mem =
+       { addr = active_access.addr
+       ; load =
+           filling &&: ~:fill_done
+           (* TODO: probably urn off as soon as first byte gets back? or separate ready? *)
+       }
    }
    : _ O.t)
 ;;

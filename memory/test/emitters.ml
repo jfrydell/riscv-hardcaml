@@ -13,18 +13,21 @@ let check_nonnegative_delay cycles =
 let word_base_addr addr = addr land lnot (word_size_bytes - 1)
 let block_base_addr addr = addr land lnot (block_size_bytes - 1)
 
-let address_generator ?(size = 0) () =
+let address_generator ?(size = 0) ?(max_set = 0) () =
   let open Quickcheck.Generator.Let_syntax in
+  let%bind set_index = Int.gen_incl 0 max_set in
   let%bind way_number = Int.gen_incl 0 3
   and word = Int.gen_incl 0 ((2 * words_per_block) - 1) in
-  let%map byte =
+  let%map byte_offset =
     match size with
     | 0 -> Int.gen_incl 0 (word_size_bytes - 1)
     | 1 -> Quickcheck.Generator.of_list [ 0; 2; 4; 6 ]
     | 2 -> Quickcheck.Generator.of_list [ 0; 4 ]
     | size -> raise_s [%message "unsupported store size" (size : int)]
   in
-  (way_number * conflicting_block_stride) + (word * word_size_bytes) + byte
+  (way_number * conflicting_block_stride)
+  + (((set_index * words_per_block) + word) * word_size_bytes)
+  + byte_offset
 ;;
 
 let apply_write_through_store ~original ~addr ~store_data ~store_size =
@@ -58,11 +61,11 @@ module Read_block = struct
       | Delay of int
     [@@deriving sexp_of]
 
-    let quickcheck_generator =
+    let quickcheck_generator ~max_set =
       let open Quickcheck.Generator.Let_syntax in
       Quickcheck.Generator.weighted_union
         [ ( 3.
-          , let%map addr = address_generator () in
+          , let%map addr = address_generator ~max_set () in
             Read { addr } )
         ; ( 1.
           , let%map cycles = Int.gen_incl 0 20 in
@@ -199,13 +202,13 @@ module Write_through = struct
       | Delay of int
     [@@deriving sexp_of]
 
-    let quickcheck_generator =
+    let quickcheck_generator ~max_set =
       let open Quickcheck.Generator.Let_syntax in
       Quickcheck.Generator.weighted_union
         [ ( 3.
           , let%bind size = Int.gen_incl 0 2
             and data = Int.gen_uniform_incl Int.min_value Int.max_value in
-            let%map addr = address_generator ~size () in
+            let%map addr = address_generator ~size ~max_set () in
             Store { addr; data; size } )
         ; ( 1.
           , let%map cycles = Int.gen_incl 0 20 in
