@@ -104,30 +104,23 @@ module Writeback = struct
   end
 
   let create scope ({ clocking; start; base_addr; data_in; dirty_in; ready } : _ I.t) =
-    (* Increment word in block from when [start] is set through last word in
-       block. The cycle after [reading_last] will be when we are [done_], and
-       [start] asserted then will keep [do_read] high constantly. *)
-    let%hw reading_last = wire 1 in
+    let%hw outputting_last = wire 1 in
     let%hw word_done = ready ||: ~:dirty_in in
-    let%hw active =
-      Utils.sr ~set:start ~reset:(reading_last &&: word_done) ~style:`Mealy_set clocking
-    in
-    let%hw read_word_number =
-      Types.Clocking.reg_fb
-        clocking
-        ~width:bits_word_in_block
-        ~f:(fun w -> w +:. 1)
-        ~enable:(active &&: word_done)
-    in
-    reading_last <-- (read_word_number ==: ones bits_word_in_block);
+    let%hw active = Utils.sr ~set:start ~reset:(outputting_last &&: word_done) clocking in
+    (* Increment on the cycle that we are [ready] to account for one-cycle delay to get data. *)
+    let%hw read_word_number = wire bits_word_in_block in
+    let%hw prev_read_word_number = Types.Clocking.reg clocking read_word_number in
+    read_word_number
+    <-- mux2 (active &&: word_done) (prev_read_word_number +:. 1) prev_read_word_number;
+    outputting_last <-- (prev_read_word_number ==: ones bits_word_in_block);
     let%hw read_addr = base_addr +: word_offset_addr read_word_number in
     ({ read_addr = base_addr +: word_offset_addr read_word_number
      ; to_mem =
          (* All these outputs go one cycle after read. *)
          { data = data_in
          ; addr = Types.Clocking.reg clocking read_addr
-         ; write = dirty_in &: Types.Clocking.reg clocking active
-         ; last = Types.Clocking.reg clocking (active &: reading_last)
+         ; write = dirty_in &: active
+         ; last = active &&: outputting_last
          }
      }
      : _ O.t)
