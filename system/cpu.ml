@@ -44,6 +44,14 @@ module Make (Config : Config) = struct
   end
 
   let create scope ({ clocking; rd_from_mem; wt_from_mem; wb_from_mem } : _ I.t) =
+    (* Exercise translation stalls through both L1 caches until real page-table
+       translation is implemented. *)
+    let mmu_state =
+      { Mmu.State.translation_mode =
+          Mmu.State.Translation_mode.Binary.Of_signal.of_enum
+            Mmu.State.Translation_mode.Cases.None_debug
+      }
+    in
     (* Instantiate core, with wires for L1 cache outputs. *)
     let%hw.Memory.L1d_cache.To_pipe.Of_signal core_from_l1d =
       Memory.L1d_cache.To_pipe.Of_signal.wires ()
@@ -63,7 +71,11 @@ module Make (Config : Config) = struct
     let%hw.Memory.L1i_cache.O.Of_signal l1i =
       Memory.L1i_cache.hierarchical
         ~scope
-        { clocking; read_from_mem = l1i_read_from_mem; from_pipeline = core.to_l1i }
+        { clocking
+        ; mmu_state
+        ; read_from_mem = l1i_read_from_mem
+        ; from_pipeline = core.to_l1i
+        }
     in
     Memory.L1i_cache.To_pipe.Of_signal.assign core_from_l1i l1i.to_pipeline;
     (* Instantiate L1 D-cache. *)
@@ -77,6 +89,7 @@ module Make (Config : Config) = struct
       Memory.L1d_cache.hierarchical
         ~scope
         { clocking
+        ; mmu_state
         ; read_from_mem = l1d_read_from_mem
         ; write_from_mem = l1d_write_from_mem
         ; from_pipeline = core.to_l1d

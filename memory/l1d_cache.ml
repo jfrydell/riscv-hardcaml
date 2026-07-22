@@ -94,6 +94,7 @@ end
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
+    ; mmu_state : 'a Mmu.State.t
     ; from_pipeline : 'a From_pipe.t
     ; write_from_mem : 'a Iface.Write_through.From_mem.t
     ; read_from_mem : 'a Iface.Read_block.From_mem.t
@@ -119,23 +120,63 @@ module Metadata = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _ I.t) =
+let create
+  scope
+  ({ clocking; mmu_state; from_pipeline; write_from_mem; read_from_mem } : _ I.t)
+  =
   (* A load missed in the cache, so we must stall and fill the cache line. *)
   let%hw load_miss = wire 1 in
   (* Stall waiting for a store to write-through. *)
   let%hw store_stall = wire 1 in
-  let%hw stall = load_miss ||: store_stall in
-  (* The access that we are currently trying, repeating the last one from the pipeline
-     until there is not a load miss. *)
-  let%hw.From_pipe.Of_signal active_access = From_pipe.Of_signal.wires () in
-  let%hw.From_pipe.Of_signal next_access =
-    From_pipe.Of_signal.mux2 stall active_access from_pipeline
+  (* Stall waiting for address translation. *)
+  let%hw stall_translate = wire 1 in
+  let%hw stall = load_miss ||: store_stall ||: stall_translate in
+  let%hw.Mmu.Translate.O.Of_signal translation =
+    Mmu.Translate.hierarchical
+      ~scope
+      { clocking
+      ; state = mmu_state
+      ; va =
+          { valid = from_pipeline.load ||: from_pipeline.store &&: ~:stall
+          ; value = from_pipeline.addr
+          }
+      ; access_type =
+          Mmu.Translate.Access_type.Of_signal.of_raw
+            (mux2
+               from_pipeline.store
+               (Mmu.Translate.Access_type.to_raw
+                  (Mmu.Translate.Access_type.Of_signal.of_enum
+                     Mmu.Translate.Access_type.Cases.Store))
+               (Mmu.Translate.Access_type.to_raw
+                  (Mmu.Translate.Access_type.Of_signal.of_enum
+                     Mmu.Translate.Access_type.Cases.Load)))
+      }
   in
-  From_pipe.Of_signal.(
-    assign active_access (reg (Types.Clocking.to_spec clocking) next_access));
-  (* Extract tag and index from access and upcoming. *)
+  (* TODO: maybe should make this the output signal of [Translate], instead of valid? *)
+  stall_translate
+  <-- Utils.sr
+        ~set:(from_pipeline.load ||: from_pipeline.store &&: ~:stall)
+        ~reset:translation.pa.valid
+        ~style:`Mealy_reset
+        ~priority:`Set
+        clocking;
+  (* Keep the complete access registered, including during translation stalls.  The
+     active version masks load/store until its physical address is usable. *)
+  let%hw.From_pipe.Of_signal registered_access = From_pipe.Of_signal.wires () in
+  let%hw.From_pipe.Of_signal next_access =
+    From_pipe.Of_signal.mux2 stall registered_access from_pipeline
+  in
+  From_pipe.(
+    Of_signal.assign registered_access (map next_access ~f:(Types.Clocking.reg clocking)));
+  let%hw.From_pipe.Of_signal active_access =
+    { registered_access with
+      addr = translation.pa.value
+    ; load = registered_access.load &&: ~:stall_translate
+    ; store = registered_access.store &&: ~:stall_translate
+    }
+  in
+  (* Extract all cache addresses from the translated physical address. *)
   let%hw active_tag = extract_tag active_access.addr in
-  let%hw active_index = extract_index active_access.addr in
   (* Tag memory. *)
   (* When [update_tag] is set (assuming [ready] is false, as we wouldn't update
      the tag except on a mismatch), tags will match on the next cycle. *)
@@ -148,7 +189,7 @@ let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _
         ~write_ports:
           [| { write_clock = clocking.clock
              ; write_enable = update_tag
-             ; write_address = active_index
+             ; write_address = extract_index active_access.addr
              ; write_data = Metadata.Of_signal.pack { tag = active_tag; valid = vdd }
              }
           |]
@@ -176,7 +217,8 @@ let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _
       ~size:active_access.size
   in
   (* Stores write-through, one cycle after loading the tag (when the instruction is technically in W). *)
-  let%hw store_hit = tag_match &&: active_access.store in
+  let%hw store_request = active_access.store in
+  let%hw store_hit = tag_match &&: store_request in
   let%hw store_word =
     let original = split_lsb ~part_width:8 ~exact:true loaded_word in
     let%hw_list.With_valid.Of_signal overwrite_bytes =
@@ -211,13 +253,13 @@ let create scope ({ clocking; from_pipeline; write_from_mem; read_from_mem } : _
   in
   loaded_word <-- data_mem.(0);
   (* Stores stall until acknowledged by memory (or a write buffer). *)
-  store_stall <-- (active_access.store &&: ~:(write_from_mem.store_ready));
+  store_stall <-- (store_request &&: ~:(write_from_mem.store_ready));
   (* When a load has missed, request the block from memory until we receive the
      last word to fill the block back from memory. *)
   update_tag <-- (load_miss &&: read_from_mem.last &&: read_from_mem.valid);
   ({ write_to_mem =
        { addr = active_access.addr
-       ; store = active_access.store
+       ; store = store_request
        ; store_size = active_access.size
        ; store_data = active_access.store_data
        }

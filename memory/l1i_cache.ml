@@ -44,6 +44,7 @@ end
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
+    ; mmu_state : 'a Mmu.State.t
     ; read_from_mem : 'a Iface.Read_block.From_mem.t
     ; from_pipeline : 'a From_pipe.t
     }
@@ -66,12 +67,27 @@ module Metadata = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
+let create scope ({ clocking; mmu_state; from_pipeline = { pc }; read_from_mem } : _ I.t) =
+  (* Stall = waiting for translation or fill, miss = translation done but waiting for fill. *)
+  let%hw stall = wire 1 in
   let%hw miss = wire 1 in
   let%hw active_pc = wire addr_width in
-  let%hw next_pc = mux2 miss active_pc pc in
+  let%hw next_pc = mux2 stall active_pc pc in
+  let%hw.Mmu.Translate.O.Of_signal translation =
+    Mmu.Translate.hierarchical
+      ~scope
+      { clocking
+      ; state = mmu_state
+      ; va = { valid = ~:miss; value = pc }
+      ; access_type =
+          Mmu.Translate.Access_type.Of_signal.of_enum
+            Mmu.Translate.Access_type.Cases.Instruction
+      }
+  in
+  let%hw active_pa = translation.pa.value in
+  let%hw pa_valid = translation.pa.valid in
   active_pc <-- Types.Clocking.reg clocking next_pc;
-  let%hw active_tag = extract_tag active_pc in
+  let%hw active_tag = extract_tag active_pa in
   let%hw update_tag = wire 1 in
   let%hw.Metadata.Of_signal read_metadata =
     let mem =
@@ -81,7 +97,7 @@ let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
         ~write_ports:
           [| { write_clock = clocking.clock
              ; write_enable = update_tag
-             ; write_address = extract_index active_pc
+             ; write_address = extract_index active_pa
              ; write_data = Metadata.Of_signal.pack { tag = active_tag; valid = vdd }
              }
           |]
@@ -96,8 +112,11 @@ let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
     in
     Metadata.Of_signal.unpack mem.(0)
   in
-  let%hw tag_match = read_metadata.valid &&: (active_tag ==: read_metadata.tag) in
-  miss <-- ~:tag_match;
+  let%hw tag_match =
+    pa_valid &&: read_metadata.valid &&: (active_tag ==: read_metadata.tag)
+  in
+  stall <-- ~:tag_match;
+  miss <-- (pa_valid &&: ~:tag_match);
   let data_mem =
     Ram.create
       ~collision_mode:Write_before_read
@@ -119,10 +138,10 @@ let create scope ({ clocking; from_pipeline = { pc }; read_from_mem } : _ I.t) =
       ()
   in
   let%hw loaded_word = data_mem.(0) in
-  let%hw word_offset = sel_bottom ~width:bits_word_offset active_pc in
+  let%hw word_offset = sel_bottom ~width:bits_word_offset active_pa in
   let%hw insn_value = insn_from_word ~word:loaded_word ~word_offset in
   update_tag <-- (miss &&: read_from_mem.valid &&: read_from_mem.last);
-  ({ read_to_mem = { addr = active_pc; load = miss &&: ~:update_tag }
+  ({ read_to_mem = { addr = active_pa; load = miss &&: ~:update_tag }
    ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }
    }
    : _ O.t)
