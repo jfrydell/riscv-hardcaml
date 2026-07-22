@@ -5,7 +5,7 @@
  (preprocess (pps ppx_jane)))
 
 (tests
- (names basic fuzz_tests)
- (modules basic fuzz_tests)
+ (names basic fuzz_tests csr_tests)
+ (modules basic fuzz_tests csr_tests)
  (libraries core hardcaml riscvemulate sim fuzz test_definitions)
  (preprocess (pps ppx_jane ppx_sexp_conv)))

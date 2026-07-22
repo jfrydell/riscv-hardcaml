@@ -119,10 +119,12 @@ let create scope (i : _ I.t) =
   let%hw stall_fetch = wire 1 in
   let%hw stall_decode = wire 1 in
   let%hw stall_memory = wire 1 in
+  let%hw stall_execute = wire 1 in
   let stall = function
-    | F -> stall_fetch |: stall_decode |: stall_memory
-    | D -> stall_decode |: stall_memory
-    | X | M ->
+    | F -> stall_fetch |: stall_decode |: stall_memory |: stall_execute
+    | D -> stall_decode |: stall_memory |: stall_execute
+    | X -> stall_memory |: stall_execute
+    | M ->
       stall_memory
       (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
 
@@ -194,8 +196,19 @@ let create scope (i : _ I.t) =
   and rd = forward_pipeline ~signal:decoded.rd ~stage:D ()
   and imm = forward_pipeline ~signal:decoded.imm ~stage:D ()
   and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D ()
-  and optype = forward_pipeline ~signal:decoded.optype ~stage:D () in
+  and optype = forward_pipeline ~signal:decoded.optype ~stage:D ()
+  and is_csr = forward_pipeline ~signal:decoded.is_csr ~stage:D () in
   (* Execute stage *)
+  let%hw.Riscv_csr.Csr.O.Of_signal csr_result =
+    Riscv_csr.Csr.hierarchical
+      ~scope
+      { clocking = i.clocking
+      ; insn = insn X
+      ; rs1 = rs1val X
+      ; valid = is_csr X &: ~:stall_memory
+      }
+  in
+  stall_execute <-- (is_csr X &: ~:(csr_result.valid));
   (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let%hw src1x =
     mux2
@@ -253,19 +266,17 @@ let create scope (i : _ I.t) =
     }
   in
   stall_memory <-- i.from_l1d.stall;
+  let%hw execute_result =
+    mux2
+      (is_csr X)
+      csr_result.rdval
+      (mux2
+         (opcode X ==: Riscv.Op.jal |: (opcode X ==: Riscv.Op.jalr))
+         (pc X +: of_string "32'd4")
+         alu_result.result)
+  in
   (* Pass written value to M for writeback and bypassing, then that or loaded value to W. *)
-  rdval M
-  <-- forward_pipeline
-        ~signal:
-          ((* If jal or jalr, then PC+4; otherwise from ALU (auipc and lui implemented in ALU src
-    selection, with lui's rs1=0 ensuring imm passes through ALU unchanged) *)
-           mux2
-             (opcode X ==: Riscv.Op.jal |: (opcode X ==: Riscv.Op.jalr))
-             (pc X +: of_string "32'd4")
-             alu_result.result)
-        ~stage:X
-        ()
-        M;
+  rdval M <-- forward_pipeline ~signal:execute_result ~stage:X () M;
   rdval W
   <-- forward_pipeline
         ~signal:(mux2 (opcode M ==: Riscv.Op.load) i.from_l1d.load_data (rdval M))

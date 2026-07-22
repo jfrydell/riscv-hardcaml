@@ -50,5 +50,6 @@ type 'a t =
   ; funct3 : 'a Riscv.Funct3.t
   ; funct7 : 'a [@bits 7]
   ; optype : 'a Optype.t
+  ; is_csr : 'a
   }
 [@@deriving hardcaml]

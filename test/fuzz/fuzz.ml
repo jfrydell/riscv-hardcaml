@@ -1,14 +1,14 @@
 open! Core
 
 (* Instruction generator using the derived [@@deriving quickcheck] from riscv.ml.
-   Filters Env (unimplemented) and normalizes through encode/decode roundtrip
+   Filters system instructions and normalizes through encode/decode roundtrip
    to ensure only hardware-representable instructions are produced. *)
 let insn_generator ~reg_max =
   let reg_ok r = r < reg_max in
   Quickcheck.Generator.filter_map Riscvemulate.quickcheck_generator_insn ~f:(fun insn ->
     let open Riscvemulate in
     match insn with
-    | Env -> None
+    | Env | Csr _ -> None
     | _ ->
       let regs_valid =
         match insn with
@@ -18,7 +18,7 @@ let insn_generator ~reg_max =
         | Store (_, { rs1; rs2; _ }) | Branch (_, { rs1; rs2; _ }) ->
           reg_ok rs1 && reg_ok rs2
         | Jal { rd; _ } | Lui { rd; _ } | AuiPc { rd; _ } -> reg_ok rd
-        | Env -> false
+        | Env | Csr _ -> false
       in
       if not regs_valid
       then None

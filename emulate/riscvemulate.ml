@@ -6,6 +6,7 @@ module Random = Random
 (* Creates a processor state with the given initial memory contents (copied) *)
 let with_mem memory =
   { regs = Array.create ~len:32 Int32.zero
+  ; csrs = Array.create ~len:4096 Int32.zero
   ; pc = ref Int32.zero
   ; memory = Hashtbl.copy memory
   }
@@ -26,5 +27,9 @@ let init ~insns ~addr =
         ~size:4
         ~value:(to_int32 insn))
     insns;
-  { regs = Array.create ~len:32 Int32.zero; pc = ref Int32.zero; memory }
+  { regs = Array.create ~len:32 Int32.zero
+  ; csrs = Array.create ~len:4096 Int32.zero
+  ; pc = ref Int32.zero
+  ; memory
+  }
 ;;

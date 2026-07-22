@@ -26,6 +26,9 @@ let create scope (insn : _ I.t) =
   let%hw immj =
     sresize ~width:32 (insn.:(31) @: insn.:[19, 12] @: insn.:(20) @: insn.:[30, 21] @: gnd)
   in
+  let funct3 = insn.:[14, 12] in
+  let%hw is_csr = opcode ==: Riscv.Op.env &&: (drop_top ~width:1 funct3 <>:. 0) in
+  let%hw is_csr_imm = is_csr &&: msb funct3 in
   (* Extract immediate based on opcode *)
   let%hw imm =
     cases ~default:(zero 32) opcode
@@ -39,14 +42,18 @@ let create scope (insn : _ I.t) =
          ~f:(fun (s, v) -> List.map s ~f:(fun s -> s, v))
   in
   (* Set which instructions read rs1, read rs2, and write to rd *)
-  let regmask =
+  let%hw regmask =
     cases ~default:(zero 3) opcode
     @@ List.concat_map
          [ [ Riscv.Op.intR; Riscv.Op.load ], of_bit_string "111"
          ; [ Riscv.Op.intI; Riscv.Op.jalr ], of_bit_string "101"
          ; [ Riscv.Op.store; Riscv.Op.branch ], of_bit_string "110"
          ; [ Riscv.Op.jal; Riscv.Op.lui; Riscv.Op.auiPc ], of_bit_string "001"
-         ; [ Riscv.Op.env ], of_bit_string "000"
+         ; ( [ Riscv.Op.env ]
+           , mux2
+               is_csr
+               (mux2 is_csr_imm (of_bit_string "001") (of_bit_string "101"))
+               (of_bit_string "000") )
          ]
          ~f:(fun (s, v) -> List.map s ~f:(fun s -> s, v))
   in
@@ -57,8 +64,8 @@ let create scope (insn : _ I.t) =
    ; rs1 = mux2 regmask.:(2) rs1 (zero 5)
    ; rs2 = mux2 regmask.:(1) rs2 (zero 5)
    ; rd = mux2 regmask.:(0) rd (zero 5)
-   ; funct3 = insn.:[14, 12]
-   ; funct7 = insn.:[31, 25]
+   ; funct3
+   ; funct7
    ; imm
    ; optype =
        Decoded.Optype.of_funct3
@@ -66,6 +73,7 @@ let create scope (insn : _ I.t) =
          ~arithi:(opcode ==: Riscv.Op.intI)
          ~f7second:funct7.:(5)
          funct3
+   ; is_csr
    }
    : _ O.t)
 ;;

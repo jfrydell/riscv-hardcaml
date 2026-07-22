@@ -1,10 +1,11 @@
-(* Emulator for unprivileged RISC-V base ISA for running tests against. *)
+(* Emulator for the implemented RISC-V ISA subset used by the tests. *)
 
 open! Base
 
 (* Mutable processor state *)
 type state =
   { regs : int32 Array.t
+  ; csrs : int32 Array.t
   ; pc : int32 ref
   ; memory : (int32, int) Hashtbl.t
   (* Byte-addressed memory (range 0-255), defaulting to zero *)
@@ -12,6 +13,7 @@ type state =
 [@@deriving sexp_of]
 
 let regs { regs; _ } = regs
+let csrs { csrs; _ } = csrs
 let pc { pc; _ } = !pc
 let memory { memory; _ } = memory
 
@@ -125,10 +127,10 @@ let is_unaligned_access ~regs ~insn =
 ;;
 
 (** Execute 1 instruction on the emulator, updating its state *)
-let step { regs; pc; memory } =
+let step { regs; csrs; pc; memory } =
   let open Riscv in
   (* Read instruction and convert to expected format *)
-  let insn = current_pc_insn { regs; pc; memory } in
+  let insn = current_pc_insn { regs; csrs; pc; memory } in
   (* Stdlib.print_endline (Sexp.to_string_hum (sexp_of_insn insn)); *)
   (* Interpeter helpers *)
   let alu rd rs1 src2 op =
@@ -162,6 +164,27 @@ let step { regs; pc; memory } =
    | Jalr { rd; _ } -> Int32.(regs.(rd) <- !pc + of_int_exn 4)
    | Lui { rd; imm } -> regs.(rd) <- imm
    | AuiPc { rd; imm } -> Int32.(regs.(rd) <- !pc + imm)
+   | Csr { op; rd; src; csr } ->
+     let old_value = csrs.(csr) in
+     let operand =
+       match src with
+       | Reg rs1 -> regs.(rs1)
+       | Imm imm -> imm
+     in
+     let writes =
+       match op, src with
+       | Csrrw, _ -> true
+       | (Csrrs | Csrrc), Reg rs1 -> rs1 <> 0
+       | (Csrrs | Csrrc), Imm imm -> Int32.(imm <> zero)
+     in
+     let new_value =
+       match op with
+       | Csrrw -> operand
+       | Csrrs -> Int32.(old_value lor operand)
+       | Csrrc -> Int32.(old_value land lnot operand)
+     in
+     regs.(rd) <- old_value;
+     if writes then csrs.(csr) <- new_value
    | Env -> failwith "Env call");
   (* Preserve r0 *)
   regs.(0) <- Int32.zero;

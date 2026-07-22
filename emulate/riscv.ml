@@ -75,6 +75,28 @@ type regs01 =
   }
 [@@deriving equal, sexp, quickcheck]
 
+(* A CSR source is either a register or a zero-extended five-bit immediate.
+   The immediate is represented as a 32-bit value so it can be used directly
+   by the emulator's read-modify-write logic. *)
+type csr_src =
+  | Reg of reg
+  | Imm of int32
+[@@deriving equal, sexp, quickcheck]
+
+type csr_op =
+  | Csrrw
+  | Csrrs
+  | Csrrc
+[@@deriving equal, sexp, quickcheck]
+
+type csr =
+  { op : csr_op
+  ; rd : reg
+  ; src : csr_src
+  ; csr : int
+  }
+[@@deriving equal, sexp, quickcheck]
+
 type insn =
   | IntReg of aluop * regs21
   | IntImm of aluop * regs11
@@ -85,6 +107,7 @@ type insn =
   | Jalr of regs11
   | Lui of regs01
   | AuiPc of regs01
+  | Csr of csr
   | Env (* TODO: ecall vs ebreak *)
 [@@deriving equal, sexp, quickcheck]
 
@@ -219,7 +242,16 @@ let of_int32 insn =
     else if opcode = Int32.to_int_exn Binary.Op.auiPc
     then Ok (AuiPc { rd; imm = immu })
     else if opcode = Int32.to_int_exn Binary.Op.env
-    then Ok Env
+    then (
+      let csr = bits insn 31 20 in
+      match funct3 with
+      | 1 -> Ok (Csr { op = Csrrw; rd; src = Reg rs1; csr })
+      | 2 -> Ok (Csr { op = Csrrs; rd; src = Reg rs1; csr })
+      | 3 -> Ok (Csr { op = Csrrc; rd; src = Reg rs1; csr })
+      | 5 -> Ok (Csr { op = Csrrw; rd; src = Imm (Int32.of_int_exn rs1); csr })
+      | 6 -> Ok (Csr { op = Csrrs; rd; src = Imm (Int32.of_int_exn rs1); csr })
+      | 7 -> Ok (Csr { op = Csrrc; rd; src = Imm (Int32.of_int_exn rs1); csr })
+      | _ -> Ok Env)
     else
       Or_error.error_s
         [%message "illegal instruction: opcode " (opcode : int) (insn : Int32.t)])
@@ -265,6 +297,22 @@ let to_int32 =
       + move_bits imm 11 11 20
       + move_bits imm 10 1 21
       + move_bits imm 20 20 31)
+  in
+  let csr_src_value = function
+    | Reg rs1 -> Int32.of_int_exn rs1
+    | Imm imm -> Int32.(imm land of_int_exn 0x1f)
+  in
+  let csrop op = function
+    | Reg _ ->
+      (match op with
+       | Csrrw -> 1
+       | Csrrs -> 2
+       | Csrrc -> 3)
+    | Imm _ ->
+      (match op with
+       | Csrrw -> 5
+       | Csrrs -> 6
+       | Csrrc -> 7)
   in
   let aluop op =
     let op, extra =
@@ -315,6 +363,11 @@ let to_int32 =
   | Jalr r -> Int32.( + ) (regsi r) Binary.Op.jalr
   | Lui r -> Int32.( + ) (regsu r) Binary.Op.lui
   | AuiPc r -> Int32.( + ) (regsu r) Binary.Op.auiPc
+  | Csr { op; rd; src; csr } ->
+    Stdlib.Int32.add
+      Int32.((of_int_exn csr lsl 20) + (csr_src_value src lsl 15) + (of_int_exn rd lsl 7)
+             + (of_int_exn (csrop op src) lsl 12))
+      Binary.Op.env
   | Env -> Binary.Op.env
 ;;
 
@@ -357,6 +410,10 @@ let%test "roundtrip auipc" =
 
 let%test "roundtrip sra" =
   roundtrip (IntImm (Sra, { rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31 }))
+;;
+
+let%test "roundtrip csrrwi" =
+  roundtrip (Csr { op = Csrrw; rd = 1; src = Imm (Int32.of_int_exn 5); csr = 0x123 })
 ;;
 
 (* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31})
