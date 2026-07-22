@@ -67,39 +67,21 @@ In practice this means:
 - RAM control signals like read addresses, write enables, write addresses, and write data should usually be plain `let%hw` values if they do not participate in a cycle.
 - Keep only the genuinely cyclic or order-sensitive wires.
 
-## Prefer Level-Triggered Control
+## Choose Control Logic and Timing Carefully
 
-Prefer expressing control as level-triggered conditions instead of introducing explicit start pulses or state transitions unless those are truly required by the circuit.
+When implementing a circuit involving multiple interacting moving pieces, it is important to think carefully about what set of signals will control everything most straightforwardly, performantly, and elegantly.
 
-Examples of good level-triggered control:
+For example, a module streaming a packet out of BRAM could use a `stream_start` and `stream_end` signal pulsing the cycle the stream starts/ends, or a single `streaming` signal that is high the entire time.
+These signals could be aligned with the bytes streaming out of BRAM, or with the reads going into BRAM a cycle earlier.
+While probably any combination of these could be the base of a working circuit, some could make the logic vastly simpler or more complicated, so think carefully and choose tastefully.
 
-- `filling = request_valid &&: ~:metadata_valid`
-- `writing_back = request_valid &&: metadata_valid &&: ~:tag_match`
-- `stream_active = request_valid &&: active_access.load &&: tag_match`
+I recommend thinking of all the different signals you need to create (register enable/increment bits, output valid bits, etc.), as well as any other patterns like the above that could be useful, then determining the simplest ones which can easily be used to generate all the others.
+In the above example, I'd probably have a start signal pulsing high the cycle before the first packet streams out, then another that stays high for the whole packet and is aligned with the BRAM output, but it depends on the specifics of the circuit.
 
-This style is often simpler than inventing `*_start` signals or explicit “enter/exit” states. If the hardware behavior is naturally “do this while this condition is true”, write it that way.
-
-A useful test is:
-
-- If an action should happen automatically once some condition becomes true, prefer the condition itself over a pulse that tries to predict that moment.
-
-## Avoid Unnecessary Explicit State Machines
-
-Do not default to a dedicated state enum.
-
-Before adding explicit state, ask:
-
-- Can the behavior be described directly from currently true conditions?
-- Is the state only encoding facts already available from tags, valid bits, ready/valid handshakes, or active request type?
-- Would a level-triggered condition be clearer than a transition graph?
-
-Explicit state is appropriate when:
-
-- The circuit must remember progress that is not derivable from current signals.
-- A helper is genuinely executing a multi-cycle protocol with internal sequencing.
-- The condition for “what happens next” cannot be expressed cleanly from existing status signals.
-
-Even when explicit state is useful during design, the final implementation may still be cleaner if that state can be collapsed into simpler conditions.
+Three miscellaneous hints:
+- It's trivial to delay a control signal by a cycle with an inline `Types.Clocking.reg` (while going the other way requires making a completely different signal)
+- ANDing level-triggered conditions about the state a circuit is in with various things which can happen (e.g., `processing_request &&: tag_match`) often makes logic simpler than alternatives
+- Do not default to a full state machine with dedicated state enum, especially for simple transaction processing modules. A circuit with an state machine going between "IDLE", "PROCESSING", and "DONE" is almost never not the right way to go---there is probably a simpler solution that also avoids unnecessarily stalling input transactions in state DONE.
 
 ## Defining Record Types
 
