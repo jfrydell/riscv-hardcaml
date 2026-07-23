@@ -98,6 +98,8 @@ module I = struct
     ; from_pipeline : 'a From_pipe.t
     ; write_from_mem : 'a Iface.Write_through.From_mem.t
     ; read_from_mem : 'a Iface.Read_block.From_mem.t
+    ; walker_from_mem : 'a Iface.Read_word.From_mem.t
+    (* TODO: unified bus and put arbiter internally? *)
     }
   [@@deriving hardcaml]
 end
@@ -106,6 +108,7 @@ module O = struct
   type 'a t =
     { write_to_mem : 'a Iface.Write_through.To_mem.t
     ; read_to_mem : 'a Iface.Read_block.To_mem.t
+    ; walker_to_mem : 'a Iface.Read_word.To_mem.t
     ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
@@ -122,7 +125,8 @@ end
 
 let create
   scope
-  ({ clocking; mmu_state; from_pipeline; write_from_mem; read_from_mem } : _ I.t)
+  ({ clocking; mmu_state; from_pipeline; write_from_mem; read_from_mem; walker_from_mem } :
+    _ I.t)
   =
   (* A load missed in the cache, so we must stall and fill the cache line. *)
   let%hw load_miss = wire 1 in
@@ -150,16 +154,10 @@ let create
                (Mmu.Translate.Access_type.to_raw
                   (Mmu.Translate.Access_type.Of_signal.of_enum
                      Mmu.Translate.Access_type.Cases.Load)))
+      ; walker_from_mem
       }
   in
-  (* TODO: maybe should make this the output signal of [Translate], instead of valid? *)
-  stall_translate
-  <-- Utils.sr
-        ~set:(from_pipeline.load ||: from_pipeline.store &&: ~:stall)
-        ~reset:translation.pa.valid
-        ~style:`Mealy_reset
-        ~priority:`Set
-        clocking;
+  stall_translate <-- translation.result.stall;
   (* Keep the complete access registered, including during translation stalls.  The
      active version masks load/store until its physical address is usable. *)
   let%hw.From_pipe.Of_signal registered_access = From_pipe.Of_signal.wires () in
@@ -170,7 +168,7 @@ let create
     Of_signal.assign registered_access (map next_access ~f:(Types.Clocking.reg clocking)));
   let%hw.From_pipe.Of_signal active_access =
     { registered_access with
-      addr = translation.pa.value
+      addr = translation.result.pa
     ; load = registered_access.load &&: ~:stall_translate
     ; store = registered_access.store &&: ~:stall_translate
     }
@@ -265,6 +263,7 @@ let create
        }
    ; read_to_mem = { addr = active_access.addr; load = load_miss &&: ~:update_tag }
    ; to_pipeline = { load_data; stall }
+   ; walker_to_mem = translation.walker_to_mem
    }
    : _ O.t)
 ;;

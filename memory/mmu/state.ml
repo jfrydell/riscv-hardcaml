@@ -7,8 +7,9 @@ let asid_width = 16
 module Translation_mode = struct
   module Cases = struct
     type t =
-      | None
-      | None_debug
+      | Bare
+      | Bare_debug
+      | Sv32
     [@@deriving compare ~localize, enumerate, sexp_of]
   end
 

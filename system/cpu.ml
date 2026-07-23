@@ -49,7 +49,7 @@ module Make (Config : Config) = struct
     let mmu_state =
       { Mmu.State.translation_mode =
           Mmu.State.Translation_mode.Binary.Of_signal.of_enum
-            Mmu.State.Translation_mode.Cases.None_debug
+            Mmu.State.Translation_mode.Cases.Bare_debug
       ; asid = Signal.zero Mmu.State.asid_width
       ; page_table_root = Signal.zero Mmu.State.addr_width
       }
@@ -77,6 +77,9 @@ module Make (Config : Config) = struct
         ; mmu_state
         ; read_from_mem = l1i_read_from_mem
         ; from_pipeline = core.to_l1i
+        ; walker_from_mem =
+            Memory.Iface.Read_word.From_mem.Of_signal.zero
+              () (* TODO: hook up to memory *)
         }
     in
     Memory.L1i_cache.To_pipe.Of_signal.assign core_from_l1i l1i.to_pipeline;
@@ -95,6 +98,9 @@ module Make (Config : Config) = struct
         ; read_from_mem = l1d_read_from_mem
         ; write_from_mem = l1d_write_from_mem
         ; from_pipeline = core.to_l1d
+        ; walker_from_mem =
+            Memory.Iface.Read_word.From_mem.Of_signal.zero
+              () (* TODO: hook up to memory *)
         }
     in
     Memory.L1d_cache.To_pipe.Of_signal.assign core_from_l1d l1d.to_pipeline;

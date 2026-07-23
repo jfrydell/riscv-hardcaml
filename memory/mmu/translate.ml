@@ -25,28 +25,33 @@ module I = struct
         is ignored until [pa.valid] goes high (but a request arriving the cycle [pa.valid]
         is high will be processed). *)
     ; access_type : 'a Access_type.t
+    ; walker_from_mem : 'a Iface.Read_word.From_mem.t
+    (** Response from memory to page table walker. *)
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { pa : 'a With_valid.t [@bits addr_width]
+    { result : 'a Iface.Translation.t
     (** A translated address. Held until the cycle after a new request comes in on
         [va.valid]. *)
+    ; walker_to_mem : 'a Iface.Read_word.To_mem.t
+    (** Request from PT walker to read PTE. *)
     }
   [@@deriving hardcaml]
 end
 
 (** No-translation mode, simply buffering the input VA into the output PA. For debugging,
     can insert a varying stall before output. *)
-let create scope ({ clocking; va; state; _ } : _ I.t) =
+let bare scope ({ clocking; va; state; _ } : _ I.t) =
+  let scope = Scope.sub_scope scope "bare" in
   let%hw stall_cycles = wire 2 in
-  (* Don't capture new request while stalling previous (or if it's not valid). *)
-  let%hw not_stalling = stall_cycles ==:. 0 in
-  let%hw accept = not_stalling &&: va.valid in
-  let%hw.With_valid.Of_signal pa =
-    With_valid.map va ~f:(Types.Clocking.reg ~enable:accept clocking)
+  (* Don't accept new request while stalling previous (or if it's not valid). *)
+  let%hw stall = stall_cycles <>:. 0 in
+  let%hw accept = ~:stall &&: va.valid in
+  let%hw.Iface.Translation.Of_signal result =
+    { pa = Types.Clocking.reg clocking ~enable:accept va.value; valid = vdd; stall }
   in
   (* Cycle through 4 values of stall amount if we're in none_debug mode. *)
   let%hw phase =
@@ -55,19 +60,75 @@ let create scope ({ clocking; va; state; _ } : _ I.t) =
   let%hw stall_amount =
     mux phase @@ List.map ~f:(of_int_trunc ~width:2) [ 1; 2; 0; 0 ]
     |> mux2
-         (State.Translation_mode.Binary.Of_signal.is state.translation_mode None)
+         (State.Translation_mode.Binary.Of_signal.is state.translation_mode Bare)
          (zero 2)
   in
   (* Set cycle count when we accept request, then decrement each cycle. *)
   stall_cycles
   <-- Types.Clocking.reg
         clocking
-        (mux2 accept stall_amount @@ mux2 not_stalling (zero 2) (stall_cycles -:. 1));
-  (* Output zeros when stalling. *)
-  ({ pa =
-       { value = mux2 not_stalling pa.value (zero 32); valid = not_stalling &&: pa.valid }
-   }
-   : _ O.t)
+        (mux2 accept stall_amount @@ mux2 stall (stall_cycles -:. 1) (zero 2));
+  (* Output zeros when stalling for testing. *)
+  ({ pa = mux2 stall (zero 32) result.pa; valid = ~:stall &&: result.valid; stall }
+   : _ Iface.Translation.t)
+;;
+
+let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t) =
+  (* Track whether the currently-arriving VA should be translated; held through
+     transaction if it takes more than a cycle. (Note that the rest of [state]
+     is registered within the TLB module). *)
+  let%hw translating = wire 1 in
+  let%hw.Iface.Translation.Of_signal bare_translation =
+    bare
+      scope
+      { clocking
+      ; va = { va with valid = va.valid &&: ~:translating }
+      ; state
+      ; access_type
+      ; walker_from_mem
+      }
+  in
+  let%hw.Iface.Tlb_response.Of_signal tlb_from_walker =
+    Iface.Tlb_response.Of_signal.wires ()
+  in
+  let%hw.Tlb.O.Of_signal tlb_out =
+    Tlb.hierarchical
+      ~scope
+      { clocking
+      ; state
+      ; va = { va with valid = va.valid &&: translating }
+      ; from_walker = tlb_from_walker
+      }
+  in
+  let%hw.Walker.O.Of_signal walker_out =
+    Walker.hierarchical
+      ~scope
+      { clocking; state; from_tlb = tlb_out.to_walker; read_from_mem = walker_from_mem }
+  in
+  Iface.Tlb_response.Of_signal.assign tlb_from_walker walker_out.to_tlb;
+  (* While a request is stalled, hold translation state constant. *)
+  let%hw stall = tlb_out.result.stall ||: bare_translation.stall in
+  (* Change request routing only when not stalled to avoid having two requests
+     in-flight at once. *)
+  translating
+  <-- Types.Clocking.cut_through_reg
+        ~enable:~:stall
+        clocking
+        (State.Translation_mode.Binary.Of_signal.is state.translation_mode Sv32);
+  (* While [translating] changes as soon as we aren't stalled, so a new request is
+     routed correctly, the output still comes from the previously-selected
+     module until we actually get a new valid request. *)
+  let%hw translating_output = Types.Clocking.reg clocking ~enable:va.valid translating in
+  let%hw.Iface.Translation.Of_signal result =
+    { (Iface.Translation.Of_signal.mux2
+         translating_output
+         tlb_out.result
+         bare_translation)
+      with
+      stall
+    }
+  in
+  ({ result; walker_to_mem = walker_out.read_to_mem } : _ O.t)
 ;;
 
 let hierarchical =

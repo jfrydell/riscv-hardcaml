@@ -21,7 +21,7 @@ module Pte = struct
     }
   [@@deriving hardcaml]
 
-  (** Decode a PTE bitvector.  Sv32 stores PPN in bits [31:10]; the two bits above the
+  (** Decode a PTE bitvector. Sv32 stores PPN in bits [31:10]; the two bits above the
       project's 32-bit physical-address range are discarded. *)
   let of_bitvector pte : Signal.t t =
     { ppn = pte |> drop_bottom ~width:10 |> sel_bottom ~width:ppn_width
@@ -52,7 +52,7 @@ module Tlb_entry = struct
     }
   [@@deriving hardcaml]
 
-  (** Build a cached translation from a VPN and decoded PTE.  The ASID is optional for
+  (** Build a cached translation from a VPN and decoded PTE. The ASID is optional for
       address-only conversions; the page-table walker supplies it when filling the TLB. *)
   let of_pte ?asid ~vpn (pte : Signal.t Pte.t) : Signal.t t =
     { vpn
@@ -84,6 +84,35 @@ module Tlb_response = struct
     ; valid : 'a
     }
   [@@deriving hardcaml]
+end
+
+(** The result of address translation, sent to the CPU. Unless noted otherwise, guaranteed
+    to be held stable until the next translation request arrives. TODO: extend to support
+    page faults *)
+module Translation = struct
+  type 'a t =
+    { pa : 'a [@bits addr_width] (** The translated address. *)
+    ; valid : 'a (** The address was translated successfully. *)
+    ; stall : 'a
+    (** The last requested translation is in progress, so the values output here are
+        invalid. *)
+    }
+  [@@deriving hardcaml]
+
+  (** Implement correct timing behavior, latching output when a response arrives and
+      raising stall between request and response. Ignores input [stall] value, and all
+      inputs when [response_valid] is low. *)
+  let with_latches ~accept_request ~response_valid ~clocking t =
+    { (map t ~f:(Types.Clocking.cut_through_reg clocking ~enable:response_valid)) with
+      stall =
+        Utils.sr
+          ~set:accept_request
+          ~reset:response_valid
+          clocking
+          ~style:`Mealy_reset
+          ~priority:`Set
+    }
+  ;;
 end
 
 (** A one-word memory transaction used by the page-table walker. [load] is a one-cycle

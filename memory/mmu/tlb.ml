@@ -26,7 +26,7 @@ end
 
 module O = struct
   type 'a t =
-    { pa : 'a With_valid.t [@bits Iface.addr_width]
+    { result : 'a Iface.Translation.t
     ; to_walker : 'a Iface.Tlb_request.t
     }
   [@@deriving hardcaml]
@@ -41,6 +41,9 @@ let create scope ({ clocking; state; va; from_walker } : _ I.t) =
   in
   let%hw active_vpn = vpn_of_va active.value in
   let%hw accept = ~:busy &&: va.valid in
+  let%hw.State.Of_signal state_latched =
+    State.map ~f:(Types.Clocking.reg clocking ~enable:accept) state
+  in
   let%hw fill = from_walker.valid in
   let%hw.Tlb_entry.Of_signal loaded_entry =
     let mem =
@@ -66,7 +69,7 @@ let create scope ({ clocking; state; va; from_walker } : _ I.t) =
     Tlb_entry.Of_signal.unpack mem.(0)
   in
   let%hw vpn_match = loaded_entry.vpn ==: active_vpn in
-  let%hw asid_match = loaded_entry.asid ==: state.asid in
+  let%hw asid_match = loaded_entry.asid ==: state_latched.asid in
   let%hw hit =
     active.valid
     &&: loaded_entry.valid
@@ -79,9 +82,11 @@ let create scope ({ clocking; state; va; from_walker } : _ I.t) =
   in
   let%hw result_valid = hit ||: fill in
   let%hw result_value = physical_address ~va:active.value ~entry:result_entry in
+  (* Stall until we get response back, and latch result once that happens. *)
   busy
   <-- Utils.sr ~set:accept ~reset:result_valid clocking ~style:`Mealy_reset ~priority:`Set;
-  ({ pa = { value = result_value; valid = result_valid }
+  let hold_when_valid = Types.Clocking.cut_through_reg clocking ~enable:result_valid in
+  ({ result = { pa = hold_when_valid result_value; valid = vdd; stall = busy }
    ; to_walker = { vpn = active_vpn; valid = miss }
    }
    : _ O.t)
