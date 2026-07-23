@@ -28,14 +28,14 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   let%hw vpn = Types.Clocking.reg clocking ~enable:accept from_tlb.vpn in
   let%hw response = read_from_mem.valid in
   (* 0 means translating high order bits via satp, 1 means lower bits based on returned PPN. *)
-  let%hw level =
-    Types.Clocking.reg_fb
-      ~width:1
-      clocking
-      ~f:(fun l -> l +:. 1)
-      ~clear:accept
-      ~enable:response
-  in
+  let%hw level = wire 1 in
+  let%hw prev_level = Types.Clocking.reg clocking level in
+  level
+  <-- (prev_level
+       (* The cycle we get a response, increment level by 1. *)
+       |> mux2 response (prev_level +:. 1)
+       (* Once we're processing a new request, restart at 0. *)
+       |> mux2 (Types.Clocking.reg clocking accept) (zero 1));
   let%hw.Iface.Pte.Of_signal pte = Iface.Pte.of_bitvector read_from_mem.data in
   let%hw incoming_base_ppn = pte.ppn @: zero Iface.page_offset_width in
   let%hw base_ppn =
@@ -57,7 +57,7 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   let%hw.Iface.Tlb_entry.Of_signal leaf_entry =
     Iface.Tlb_entry.of_pte ~vpn ~asid:state.asid pte
   in
-  let%hw last_response = level ==:. 1 &&: response in
+  let%hw last_response = prev_level ==:. 1 &&: response in
   busy
   <-- Utils.sr
         ~set:accept

@@ -48,28 +48,28 @@ module Page_table_memory = struct
   module O = Mmu.Iface.Read_word.To_mem
   module Step = Hardcaml_step_testbench.Monadic.Functional.Cyclesim.Make (I) (O)
 
-  let handle ~page_table () =
-    let rec loop () =
-      let%bind.Step outs = Step.cycle (I.Of_bits.zero ()) in
+  let handle ~page_table ~delay_cycles () =
+    let rec loop ?(inputs = I.Of_bits.zero ()) () =
+      let%bind.Step outs = Step.cycle inputs in
       if Bits.to_bool outs.before_edge.load
       then (
+        let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
         let addr = Bits.to_int_trunc outs.before_edge.addr in
         let data = Hashtbl.find_exn page_table addr in
-        let%bind.Step _ =
-          Step.cycle
+        loop
+          ~inputs:
             { data
             ; addr = Bits.of_int_trunc ~width:Mmu.Iface.addr_width addr
             ; valid = Bits.vdd
             }
-        in
-        loop ())
+          ())
       else loop ()
     in
     loop ()
   ;;
 
-  let spawn ~page_table ~inputs ~outputs =
-    Step.spawn_io ~inputs ~outputs (fun _ -> handle ~page_table ())
+  let spawn ~page_table ~inputs ~outputs ~delay_cycles =
+    Step.spawn_io ~inputs ~outputs (fun _ -> handle ~page_table ~delay_cycles ())
   ;;
 end
 
@@ -147,6 +147,7 @@ let run_test ~page_table translations =
     let%bind.Step _ =
       Page_table_memory.spawn
         ~page_table
+        ~delay_cycles:(fun _ -> 0)
         ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
           { parent with
             read_from_mem =
