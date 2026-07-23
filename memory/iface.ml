@@ -21,7 +21,8 @@ module Write_through = struct
   let to_bytes ({ To_mem.addr; store_data; store_size; _ } : _ To_mem.t) =
     let word_offset = sel_bottom ~width:(address_bits_for (cpu_bus_width / 8)) addr in
     let rep_data ~width =
-      List.init (cpu_bus_width / width) ~f:(fun _ -> sel_bottom ~width store_data) |> concat_lsb
+      List.init (cpu_bus_width / width) ~f:(fun _ -> sel_bottom ~width store_data)
+      |> concat_lsb
     in
     let data =
       mux store_size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
@@ -80,3 +81,9 @@ module Read_block = struct
     [@@deriving hardcaml]
   end
 end
+
+(** A single 32-bit word read, used by the MMU page-table walker. The definition lives in
+    [Mmu.Iface] so the MMU library does not depend back on this library; this alias
+    exposes the same interface at the memory boundary. *)
+module Read_word = Mmu.Iface.Read_word
+(* TODO: put all interfaces in own library probably *)

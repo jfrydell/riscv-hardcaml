@@ -50,6 +50,8 @@ module Make (Config : Config) = struct
       { Mmu.State.translation_mode =
           Mmu.State.Translation_mode.Binary.Of_signal.of_enum
             Mmu.State.Translation_mode.Cases.None_debug
+      ; asid = Signal.zero Mmu.State.asid_width
+      ; page_table_root = Signal.zero Mmu.State.addr_width
       }
     in
     (* Instantiate core, with wires for L1 cache outputs. *)
