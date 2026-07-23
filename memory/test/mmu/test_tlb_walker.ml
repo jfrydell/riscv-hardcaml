@@ -55,7 +55,7 @@ module Page_table_memory = struct
       then (
         let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
         let addr = Bits.to_int_trunc outs.before_edge.addr in
-        let data = Hashtbl.find_exn page_table addr in
+        let data = page_table addr in
         loop
           ~inputs:
             { data
@@ -72,33 +72,6 @@ module Page_table_memory = struct
     Step.spawn_io ~inputs ~outputs (fun _ -> handle ~page_table ~delay_cycles ())
   ;;
 end
-
-let pte ~ppn ~read ~write ~execute ~user ~global =
-  let flags =
-    1
-    lor (read lsl 1)
-    lor (write lsl 2)
-    lor (execute lsl 3)
-    lor (user lsl 4)
-    lor (global lsl 5)
-  in
-  Bits.of_int_trunc ~width:Mmu.Iface.addr_width ((ppn lsl 10) lor flags)
-;;
-
-let add_mapping ~page_table ~root ~vpn ~ppn ~user ~global =
-  let root_index = vpn lsr 10 in
-  let leaf_index = vpn land 0x3ff in
-  let second_level_base = 0x2000 + (root_index lsl 12) in
-  Hashtbl.set
-    page_table
-    ~key:(root + (root_index lsl 2))
-    ~data:
-      (pte ~ppn:(second_level_base lsr 12) ~read:0 ~write:0 ~execute:0 ~user:0 ~global:0);
-  Hashtbl.set
-    page_table
-    ~key:(second_level_base + (leaf_index lsl 2))
-    ~data:(pte ~ppn ~read:1 ~write:1 ~execute:1 ~user ~global)
-;;
 
 let state ~root ~asid : Bits.t Mmu.State.t =
   { translation_mode =
@@ -119,35 +92,33 @@ let input ~state ~va ~valid : Bits.t Dut.I.t =
   }
 ;;
 
-let check_pa ~va ~expected (output : Step.O_data.t) =
+let check_pa ~va (output : Step.O_data.t) =
   let output = Step.O_data.before_edge output in
   if not (Bits.to_bool output.pa.valid)
   then raise_s [%message "translation did not become valid" (va : int)];
   let actual = Bits.to_int_trunc output.pa.value in
-  if not (Int.equal actual expected)
-  then
-    raise_s [%message "unexpected translation" (va : int) (actual : int) (expected : int)]
+  Sample_page_table.check_translation ~va ~actual_pa:actual
 ;;
 
-let issue_translation ~state ~va ~expected =
+let issue_translation ~state ~va =
   let%bind.Step _ = Step.cycle (input ~state ~va ~valid:true) in
   let rec wait_for_result () =
     let%bind.Step output = Step.cycle (input ~state ~va ~valid:false) in
     if Bits.to_bool (Step.O_data.before_edge output).pa.valid
     then (
-      check_pa ~va ~expected output;
+      check_pa ~va output;
       Step.return ())
     else wait_for_result ()
   in
   wait_for_result ()
 ;;
 
-let run_test ~page_table translations =
-  run ~create:Dut.create ~timeout:200 (fun () ->
+let run_test ?(timeout = 200) ?(delay_cycles = fun () -> 0) ~page_table translations =
+  run ~create:Dut.create ~timeout (fun () ->
     let%bind.Step _ =
       Page_table_memory.spawn
         ~page_table
-        ~delay_cycles:(fun _ -> 0)
+        ~delay_cycles
         ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
           { parent with
             read_from_mem =
@@ -157,44 +128,87 @@ let run_test ~page_table translations =
     in
     let rec issue_all = function
       | [] -> Step.return ()
-      | (state, va, expected) :: rest ->
-        let%bind.Step () = issue_translation ~state ~va ~expected in
+      | (state, va) :: rest ->
+        let%bind.Step () = issue_translation ~state ~va in
         issue_all rest
     in
     issue_all translations)
 ;;
 
 let%test_unit "two-level page-table walk and TLB hit" =
-  let root = 0x1000 in
   let vpn = 0x12345 in
   let page_offset0 = 0x34 in
   let page_offset1 = 0xff0 in
-  let physical_ppn = 0xabc in
-  let page_table = Int.Table.create () in
-  add_mapping ~page_table ~root ~vpn ~ppn:physical_ppn ~user:1 ~global:0;
   run_test
-    ~page_table
-    [ ( state ~root ~asid:7
-      , (vpn lsl 12) lor page_offset0
-      , (physical_ppn lsl 12) lor page_offset0 )
-    ; ( state ~root ~asid:7
-      , (vpn lsl 12) lor page_offset1
-      , (physical_ppn lsl 12) lor page_offset1 )
+    ~page_table:Sample_page_table.lookup
+    [ state ~root:Sample_page_table.root ~asid:7, (vpn lsl 12) lor page_offset0
+    ; state ~root:Sample_page_table.root ~asid:7, (vpn lsl 12) lor page_offset1
     ]
 ;;
 
 let%test_unit "different ASIDs and direct-map conflicts refill the TLB" =
-  let root = 0x1000 in
   let vpn0 = 0x00010 in
   let vpn1 = vpn0 + (1 lsl Mmu.Tlb.bits_index) in
-  let page_table = Int.Table.create () in
-  add_mapping ~page_table ~root ~vpn:vpn0 ~ppn:0x321 ~user:0 ~global:0;
-  add_mapping ~page_table ~root ~vpn:vpn1 ~ppn:0x654 ~user:0 ~global:0;
   run_test
-    ~page_table
-    [ state ~root ~asid:1, (vpn0 lsl 12) lor 0x100, (0x321 lsl 12) lor 0x100
-    ; state ~root ~asid:2, (vpn0 lsl 12) lor 0x200, (0x321 lsl 12) lor 0x200
-    ; state ~root ~asid:2, (vpn1 lsl 12) lor 0x300, (0x654 lsl 12) lor 0x300
-    ; state ~root ~asid:1, (vpn0 lsl 12) lor 0x400, (0x321 lsl 12) lor 0x400
+    ~page_table:Sample_page_table.lookup
+    [ state ~root:Sample_page_table.root ~asid:1, (vpn0 lsl 12) lor 0x100
+    ; state ~root:Sample_page_table.root ~asid:2, (vpn0 lsl 12) lor 0x200
+    ; state ~root:Sample_page_table.root ~asid:2, (vpn1 lsl 12) lor 0x300
+    ; state ~root:Sample_page_table.root ~asid:1, (vpn0 lsl 12) lor 0x400
     ]
+;;
+
+type translation =
+  { asid : int
+  ; vpn : int
+  ; page_offset : int
+  }
+[@@deriving sexp_of]
+
+let translation_generator =
+  let open Quickcheck.Generator.Let_syntax in
+  let%map asid = Int.gen_incl 0 15
+  and vpn = Int.gen_incl 0 ((1 lsl Mmu.Iface.vpn_width) - 1)
+  and page_offset = Int.gen_incl 0 ((1 lsl Mmu.Iface.page_offset_width) - 1) in
+  { asid; vpn; page_offset }
+;;
+
+let scenario_generator ~length =
+  let open Quickcheck.Generator.Let_syntax in
+  let%map translations =
+    Quickcheck.Generator.list_with_length length translation_generator
+  and delay_cycles = Quickcheck.Generator.list_with_length 20 (Int.gen_incl 0 12) in
+  translations, delay_cycles
+;;
+
+let cycle_values values =
+  let values = Array.of_list values in
+  if Array.is_empty values then invalid_arg "cycle_values requires a non-empty list";
+  let index = ref 0 in
+  fun () ->
+    let value = values.(!index) in
+    index := (!index + 1) mod Array.length values;
+    value
+;;
+
+let run_scenario (translations, delay_values) =
+  let translations =
+    List.map translations ~f:(fun { asid; vpn; page_offset } ->
+      ( state ~root:Sample_page_table.root ~asid
+      , (vpn lsl Mmu.Iface.page_offset_width) lor page_offset ))
+  in
+  run_test
+    ~timeout:10_000
+    ~delay_cycles:(cycle_values delay_values)
+    ~page_table:Sample_page_table.lookup
+    translations
+;;
+
+let%test_unit "randomized page-table walks with variable memory latency" =
+  Quickcheck.test
+    ~seed:(`Deterministic "mmu-tlb-walker")
+    ~sexp_of:[%sexp_of: translation list * int list]
+    ~trials:100
+    (scenario_generator ~length:200)
+    ~f:run_scenario
 ;;
