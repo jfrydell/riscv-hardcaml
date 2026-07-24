@@ -188,9 +188,10 @@ let cycle_external { sim; backing_memory; fill_addr; writeback_stall_counter; _ 
     ~fill_addr
 ;;
 
-(* Runs simulation until the next instruction commits, throwing an exception if this doesn't occur within 10 cycles.
-Runs the given function prior to each cycle (for example, to inject instructions at PC for hacky testing) *)
-let cycle_insn ?f:(cycle_fn = fun _ -> ()) t =
+(** Runs simulation until the next instruction commits, throwing an exception if this
+    doesn't occur within 100 cycles. Runs the given function prior to each cycle (for
+    example, to inject instructions at PC for hacky testing). *)
+let cycle_insn ?(cycle_fn = fun _ -> ()) t =
   match
     List.range 0 100
     |> List.find ~f:(fun _ ->

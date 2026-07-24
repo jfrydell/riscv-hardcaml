@@ -97,11 +97,11 @@ let generate_program ~insn_count ~insn_stream ~filter =
 
 (* Run a program on the emulator and on the simulated hardware, returning None if end state is the
    same and Some with diagnostics otherwise. *)
-let test_program ~program ~insn_count =
+let test_program ~cycle_fn ~program ~insn_count =
   let sim = Sim.Cpu.create ~memory:(Hashtbl.copy program) No_waves in
   let emulator = Riscvemulate.with_mem program in
   for _ = 0 to insn_count do
-    Sim.Cpu.cycle_insn sim;
+    Sim.Cpu.cycle_insn ?cycle_fn sim;
     Riscvemulate.step emulator
   done;
   Sim.Cpu.flush sim;
@@ -138,10 +138,11 @@ let fuzz_config_shrinker =
 
 (* Run a fuzz test: generate program from config, compare emulator vs hardware.
    Diagnostics are embedded in the error sexp so shrinking is quiet. *)
-let check_equivalence ?(filter = Fn.const true) ~reg_max { seed; insn_count; _ } =
+let check_equivalence ?(filter = Fn.const true) ?cycle_fn ~reg_max { seed; insn_count; _ }
+  =
   let insn_stream = insn_stream ~reg_max ~seed in
   let program, trace = generate_program ~insn_count ~insn_stream ~filter in
-  match test_program ~program ~insn_count:(insn_count + 5) with
+  match test_program ~cycle_fn ~program ~insn_count with
   | None -> ()
   | Some (correct_regs, sim_regs, mem_diff) ->
     let mem_diff =
