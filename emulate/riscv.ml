@@ -365,8 +365,11 @@ let to_int32 =
   | AuiPc r -> Int32.( + ) (regsu r) Binary.Op.auiPc
   | Csr { op; rd; src; csr } ->
     Stdlib.Int32.add
-      Int32.((of_int_exn csr lsl 20) + (csr_src_value src lsl 15) + (of_int_exn rd lsl 7)
-             + (of_int_exn (csrop op src) lsl 12))
+      Int32.(
+        (of_int_exn csr lsl 20)
+        + (csr_src_value src lsl 15)
+        + (of_int_exn rd lsl 7)
+        + (of_int_exn (csrop op src) lsl 12))
       Binary.Op.env
   | Env -> Binary.Op.env
 ;;

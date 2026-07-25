@@ -11,4 +11,5 @@
   hardcaml_waveterm.interactive
   fuzz
   test_definitions)
- (preprocess (pps ppx_jane)))
+ (preprocess
+  (pps ppx_jane)))

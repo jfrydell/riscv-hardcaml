@@ -29,7 +29,9 @@ let create scope ({ clocking; insn; rs1; valid } : _ I.t) =
   let%hw is_csrrw = funct3 ==: of_bit_string "001" in
   let%hw is_csrrs = funct3 ==: of_bit_string "010" in
   let%hw is_csrrc = funct3 ==: of_bit_string "011" in
-  let%hw is_csr = is_csrrw |: is_csrrs |: is_csrrc |: (funct3.:(2) &: (funct3.:[1, 0] <>: zero 2)) in
+  let%hw is_csr =
+    is_csrrw |: is_csrrs |: is_csrrc |: (funct3.:(2) &: (funct3.:[1, 0] <>: zero 2))
+  in
   let%hw is_immediate = funct3.:(2) in
   let%hw operand = mux2 is_immediate (uresize ~width:32 rs1_address) rs1 in
   let%hw request = valid &: is_csr in
@@ -47,12 +49,13 @@ let create scope ({ clocking; insn; rs1; valid } : _ I.t) =
   let%hw write_data = wire 32 in
   let%hw write_enable =
     result_valid
-    &: ((saved_funct3 ==: of_bit_string "001")
+    &: (saved_funct3
+        ==: of_bit_string "001"
         |: (saved_funct3 ==: of_bit_string "101")
-        |: ((saved_funct3 ==: of_bit_string "010") &: (saved_operand <>: zero 32))
-        |: ((saved_funct3 ==: of_bit_string "011") &: (saved_operand <>: zero 32))
-        |: ((saved_funct3 ==: of_bit_string "110") &: (saved_operand <>: zero 32))
-        |: ((saved_funct3 ==: of_bit_string "111") &: (saved_operand <>: zero 32)))
+        |: (saved_funct3 ==: of_bit_string "010" &: (saved_operand <>: zero 32))
+        |: (saved_funct3 ==: of_bit_string "011" &: (saved_operand <>: zero 32))
+        |: (saved_funct3 ==: of_bit_string "110" &: (saved_operand <>: zero 32))
+        |: (saved_funct3 ==: of_bit_string "111" &: (saved_operand <>: zero 32)))
   in
   let ram =
     Ram.create
@@ -80,12 +83,10 @@ let create scope ({ clocking; insn; rs1; valid } : _ I.t) =
   let%hw old_value = ram.(0) in
   let%hw write_value =
     mux2
-      ((saved_funct3 ==: of_bit_string "010")
-       |: (saved_funct3 ==: of_bit_string "110"))
+      (saved_funct3 ==: of_bit_string "010" |: (saved_funct3 ==: of_bit_string "110"))
       (old_value |: saved_operand)
       (mux2
-         ((saved_funct3 ==: of_bit_string "011")
-          |: (saved_funct3 ==: of_bit_string "111"))
+         (saved_funct3 ==: of_bit_string "011" |: (saved_funct3 ==: of_bit_string "111"))
          (old_value &: ~:saved_operand)
          saved_operand)
   in

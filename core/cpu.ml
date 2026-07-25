@@ -119,11 +119,10 @@ let create scope (i : _ I.t) =
   let%hw stall_fetch = wire 1 in
   let%hw stall_decode = wire 1 in
   let%hw stall_memory = wire 1 in
-  let%hw stall_execute = wire 1 in
   let stall = function
-    | F -> stall_fetch |: stall_decode |: stall_memory |: stall_execute
-    | D -> stall_decode |: stall_memory |: stall_execute
-    | X -> stall_memory |: stall_execute
+    | F -> stall_fetch |: stall_decode |: stall_memory
+    | D -> stall_decode |: stall_memory
+    | X -> stall_memory
     | M ->
       stall_memory
       (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
@@ -131,11 +130,17 @@ let create scope (i : _ I.t) =
            TODO: I think best fix is for stalled pipeline latch to take in bypassed value, rather than always holding its current value. Current stall signal uses pipeline latch write-enable, but my understanding is that just muxes in current value when disabled. Muxing in the value from after bypass logic instead shouldn't affect logic depth. *)
     | W -> stall_memory
   in
-  (* Send bubble to D,X on branch in execute, or to any on stall in previous stage *)
+  (* Send bubble to M,D,X on trap (detected at end of memory), to D,X on trap or
+     branch in execute, or to any on stall in previous stage. W bubbles if an
+     exception means the instruction in M itself should not be committed. *)
+  let%hw trap_active = wire 1 in
+  let%hw trap_squash_M = wire 1 in
   let%hw branch_execute = wire 1 in
   let bubble s =
     let withoutstall = function
-      | D | X -> branch_execute
+      | W -> trap_squash_M
+      | M -> trap_active
+      | D | X -> branch_execute ||: trap_active
       | _ -> gnd
     in
     withoutstall s ||: stall (index_stage (stage_index s - 1))
@@ -151,9 +156,12 @@ let create scope (i : _ I.t) =
      imagine stalling execute, but if M and W proceed then bypassing is
      annoying). *)
   let%hw branch_pc = wire 32 in
+  let%hw.With_valid.Of_signal trap_pc = { value = wire 32; valid = wire 1 } in
   let%hw pc_reg = wire 32 in
   let%hw pc_to_fetch =
-    mux2 branch_execute branch_pc (mux2 (stall F) pc_reg (pc_reg +:. 4))
+    mux2 trap_pc.valid trap_pc.value
+    @@ mux2 branch_execute branch_pc
+    @@ mux2 (stall F) pc_reg (pc_reg +:. 4)
   in
   pc_reg <-- Types.Clocking.reg i.clocking pc_to_fetch;
   let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
@@ -162,6 +170,7 @@ let create scope (i : _ I.t) =
      during miss handling, the I-cache gives [valid] once the miss is handled,
      and we must ignore. *)
   (* TODO: don't love the comparison here, and really feels like this should be simplifiable. *)
+  (* TODO: probably should stop fetching while a trap is active. fine to keep doing it, as we will throw away those instructions at D until [trap_active] goes low, but could pollute cache / keep walking page tables looking for impossible translation on non-executable fetch. *)
   stall_fetch <-- (~:(i.from_l1i.valid) ||: (i.from_l1i.pc <>: pc_reg));
   let insn =
     forward_pipeline
@@ -197,18 +206,9 @@ let create scope (i : _ I.t) =
   and imm = forward_pipeline ~signal:decoded.imm ~stage:D ()
   and funct3 = forward_pipeline ~signal:decoded.funct3 ~stage:D ()
   and optype = forward_pipeline ~signal:decoded.optype ~stage:D ()
-  and is_csr = forward_pipeline ~signal:decoded.is_csr ~stage:D () in
+  and is_csr = forward_pipeline ~signal:decoded.is_csr ~stage:D ()
+  and result_in_m = forward_pipeline ~signal:decoded.result_in_m ~stage:D () in
   (* Execute stage *)
-  let%hw.Riscv_csr.Csr.O.Of_signal csr_result =
-    Riscv_csr.Csr.hierarchical
-      ~scope
-      { clocking = i.clocking
-      ; insn = insn X
-      ; rs1 = rs1val X
-      ; valid = is_csr X &: ~:stall_memory
-      }
-  in
-  stall_execute <-- (is_csr X &: ~:(csr_result.valid));
   (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let%hw src1x =
     mux2
@@ -255,31 +255,39 @@ let create scope (i : _ I.t) =
         ];
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
+  let next_pc =
+    forward_pipeline ~signal:(mux2 branch_execute branch_pc (pc X +:. 4)) ~stage:X ()
+  in
+  let%hw execute_result =
+    mux2
+      (opcode X ==: Riscv.Op.jal |: (opcode X ==: Riscv.Op.jalr))
+      (pc X +: of_string "32'd4")
+      alu_result.result
+  in
   (* Memory stage. Inputs are latched internally. *)
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
-    ; load = opcode X ==: Riscv.Op.load
-    ; store = opcode X ==: Riscv.Op.store
+    ; load = opcode X ==: Riscv.Op.load &&: ~:(bubble M)
+    ; store = opcode X ==: Riscv.Op.store &&: ~:(bubble M)
     ; size = (funct3 X).:[1, 0]
     ; sign_extend = ~:((funct3 X).:(2))
     ; store_data = rs2val X
     }
   in
-  stall_memory <-- i.from_l1d.stall;
-  let%hw execute_result =
-    mux2
-      (is_csr X)
-      csr_result.rdval
-      (mux2
-         (opcode X ==: Riscv.Op.jal |: (opcode X ==: Riscv.Op.jalr))
-         (pc X +: of_string "32'd4")
-         alu_result.result)
+  (* CSR instructions are also done in memory stage, where they block any
+     interrupt until complete to maintain atomicity. *)
+  let%hw.Riscv_csr.Csr.O.Of_signal csr_result =
+    Riscv_csr.Csr.hierarchical
+      ~scope
+      { clocking = i.clocking; insn = insn M; rs1 = rs1val M; valid = is_csr M }
   in
+  stall_memory <-- (i.from_l1d.stall ||: (is_csr M &: ~:(csr_result.valid)));
+  let%hw memory_result = mux2 (is_csr M) csr_result.rdval i.from_l1d.load_data in
   (* Pass written value to M for writeback and bypassing, then that or loaded value to W. *)
   rdval M <-- forward_pipeline ~signal:execute_result ~stage:X () M;
   rdval W
   <-- forward_pipeline
-        ~signal:(mux2 (opcode M ==: Riscv.Op.load) i.from_l1d.load_data (rdval M))
+        ~signal:(mux2 (result_in_m M) memory_result (rdval M))
         ~stage:M
         ()
         W;
@@ -304,18 +312,33 @@ let create scope (i : _ I.t) =
            (rs2 X ==: rd W &: (rs2 X <>: zero 5) -- "bypassWX2")
            (rdval W)
            (forward_pipeline ~signal:(rs2val D) ~stage:D () X));
-  (* for store data *)
+  (* For store data *)
   rs2val M
   <-- mux2
         (rs2 M ==: rd W &: (rs2 M <>: zero 5) -- "bypassWM2")
         (rdval W)
         (forward_pipeline ~signal:(rs2val X) ~stage:X () M);
+  (* CSR gets data from rs1 (not bothering with load/CSR -> CSR bypass). *)
+  rs1val M <-- forward_pipeline ~signal:(rs1val X) ~stage:X () M;
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
-  let reg_is_load_dest rs =
-    opcode X ==: Riscv.Op.load &: (rs ==: rd X) &: (rs <>: zero 5)
-  in
+  let reg_is_load_dest rs = result_in_m X &: (rs ==: rd X) &: (rs <>: zero 5) in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
   let%hw commit_valid = is_insn W &&: ~:(stall W) in
+  (* Trap handling. *)
+  let%hw.Trap.O.Of_signal trap =
+    Trap.hierarchical
+      ~scope
+      { clocking = i.clocking
+      ; m_status = { valid = is_insn M; stall = stall_memory }
+      ; pc = pc M
+      ; next_pc = next_pc M
+      ; exception_request = gnd
+      ; interrupt_request = gnd
+      }
+  in
+  trap_active <-- trap.trap_active;
+  trap_squash_M <-- trap.squash_M;
+  With_valid.iter2 ~f:( <-- ) trap_pc trap.handler_pc;
   O.{ to_l1i; to_l1d; commit_pc = { valid = commit_valid; value = pc W } }
 ;;
 

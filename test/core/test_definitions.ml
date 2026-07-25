@@ -45,8 +45,8 @@ module Fuzz = struct
     ; reg_max = 4
     ; filter =
         (function
-         | Riscvemulate.IntImm (Add, _) | Load _ | Store _ | Branch _ -> true
-         | _ -> false)
+          | Riscvemulate.IntImm (Add, _) | Load _ | Store _ | Branch _ -> true
+          | _ -> false)
     }
   ;;
 
@@ -73,7 +73,6 @@ module Fuzz = struct
   ;;
 
   let all = [ small; hazards; coverage ]
-
   let of_name name = List.find all ~f:(fun t -> String.equal t.name name)
   let of_name_exn name = of_name name |> Option.value_exn
 end

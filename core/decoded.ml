@@ -51,5 +51,6 @@ type 'a t =
   ; funct7 : 'a [@bits 7]
   ; optype : 'a Optype.t
   ; is_csr : 'a
+  ; result_in_m : 'a (** An instruction that produces its result in M instead of X. *)
   }
 [@@deriving hardcaml]

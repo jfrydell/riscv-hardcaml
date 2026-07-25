@@ -58,10 +58,10 @@ let rec resample ~f ~cond =
 (small range should make hazards more common). Also takes a function constraining branch/jump offsets,
 which is necessary for our hacky testing (which breaks if we fetch the same PC twice in ~5 cycles). *)
 let instruction
-      ~mem_range:(memmin, memmax)
-      ?(reg_max = 32)
-      ?(branch_cond = fun _ -> true)
-      ()
+  ~mem_range:(memmin, memmax)
+  ?(reg_max = 32)
+  ?(branch_cond = fun _ -> true)
+  ()
   =
   let reg () = Random.int reg_max in
   let addr () = Random.int32_incl memmin memmax in

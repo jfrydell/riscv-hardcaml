@@ -20,16 +20,7 @@ let program =
 let expected_regs =
   let regs = Array.create ~len:32 Int32.zero in
   List.iter
-    [ 2, 0x5
-    ; 3, 0x7
-    ; 4, 0x6
-    ; 6, 0xa5
-    ; 7, 0xaf
-    ; 8, 0xa5
-    ; 9, 0x0f
-    ; 10, 0xa0
-    ; 11, 0xa0
-    ]
+    [ 2, 0x5; 3, 0x7; 4, 0x6; 6, 0xa5; 7, 0xaf; 8, 0xa5; 9, 0x0f; 10, 0xa0; 11, 0xa0 ]
     ~f:(fun (register, value) -> regs.(register) <- Int32.of_int_exn value);
   regs
 ;;
@@ -48,3 +39,4 @@ let () =
   if not (Array.equal Int32.equal emulator_regs expected_regs)
   then raise_s [%message "CSR emulator result mismatch" (emulator_regs : int32 array)];
   Stdio.print_string "CSR program: all modes good\n"
+;;

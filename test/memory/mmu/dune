@@ -1,5 +1,12 @@
 (library
  (name test_memory_mmu)
  (inline_tests)
- (libraries core hardcaml memory mmu hardcaml_step_testbench hardcaml_test_harness)
- (preprocess (pps ppx_jane ppx_hardcaml)))
+ (libraries
+  core
+  hardcaml
+  memory
+  mmu
+  hardcaml_step_testbench
+  hardcaml_test_harness)
+ (preprocess
+  (pps ppx_jane ppx_hardcaml)))

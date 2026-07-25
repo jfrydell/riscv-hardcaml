@@ -1,2 +1,5 @@
-(library (name fuzz) (libraries core hardcaml riscvemulate sim)
-         (preprocess (pps ppx_jane)))
+(library
+ (name fuzz)
+ (libraries core hardcaml riscvemulate sim)
+ (preprocess
+  (pps ppx_jane)))

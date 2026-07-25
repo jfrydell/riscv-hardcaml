@@ -1,5 +1,11 @@
 (library
-  (name test_memory)
-  (inline_tests)
-  (libraries core hardcaml memory hardcaml_step_testbench hardcaml_test_harness)
-  (preprocess (pps ppx_jane ppx_hardcaml)))
+ (name test_memory)
+ (inline_tests)
+ (libraries
+  core
+  hardcaml
+  memory
+  hardcaml_step_testbench
+  hardcaml_test_harness)
+ (preprocess
+  (pps ppx_jane ppx_hardcaml)))

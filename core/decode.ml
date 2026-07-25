@@ -74,6 +74,7 @@ let create scope (insn : _ I.t) =
          ~f7second:funct7.:(5)
          funct3
    ; is_csr
+   ; result_in_m = opcode ==: Riscv.Op.load ||: is_csr
    }
    : _ O.t)
 ;;
