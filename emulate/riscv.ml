@@ -97,6 +97,17 @@ type csr =
   }
 [@@deriving equal, sexp, quickcheck]
 
+module Csr_address = struct
+  let mstatus = 0x300
+  let mstatush = 0x301
+  let mie = 0x304
+  let mtvec = 0x305
+  let sepc = 0x141
+  let mepc = 0x341
+  let mcause = 0x342
+  let mtval = 0x343
+end
+
 type insn =
   | IntReg of aluop * regs21
   | IntImm of aluop * regs11
@@ -108,7 +119,9 @@ type insn =
   | Lui of regs01
   | AuiPc of regs01
   | Csr of csr
-  | Env (* TODO: ecall vs ebreak *)
+  | Ecall
+  | Ebreak
+  | Mret
 [@@deriving equal, sexp, quickcheck]
 
 (* Nop = addi $0, $0, 0 *)
@@ -245,13 +258,16 @@ let of_int32 insn =
     then (
       let csr = bits insn 31 20 in
       match funct3 with
+      | 0 when Int32.equal insn (Int32.of_string "0x00000073") -> Ok Ecall
+      | 0 when Int32.equal insn (Int32.of_string "0x00100073") -> Ok Ebreak
+      | 0 when Int32.equal insn (Int32.of_string "0x30200073") -> Ok Mret
       | 1 -> Ok (Csr { op = Csrrw; rd; src = Reg rs1; csr })
       | 2 -> Ok (Csr { op = Csrrs; rd; src = Reg rs1; csr })
       | 3 -> Ok (Csr { op = Csrrc; rd; src = Reg rs1; csr })
       | 5 -> Ok (Csr { op = Csrrw; rd; src = Imm (Int32.of_int_exn rs1); csr })
       | 6 -> Ok (Csr { op = Csrrs; rd; src = Imm (Int32.of_int_exn rs1); csr })
       | 7 -> Ok (Csr { op = Csrrc; rd; src = Imm (Int32.of_int_exn rs1); csr })
-      | _ -> Ok Env)
+      | _ -> Or_error.error_s [%message "illegal instruction: system" (insn : Int32.t)])
     else
       Or_error.error_s
         [%message "illegal instruction: opcode " (opcode : int) (insn : Int32.t)])
@@ -371,7 +387,9 @@ let to_int32 =
         + (of_int_exn rd lsl 7)
         + (of_int_exn (csrop op src) lsl 12))
       Binary.Op.env
-  | Env -> Binary.Op.env
+  | Ecall -> Int32.of_string "0x00000073"
+  | Ebreak -> Int32.of_string "0x00100073"
+  | Mret -> Int32.of_string "0x30200073"
 ;;
 
 (* Test bits *)
@@ -417,6 +435,10 @@ let%test "roundtrip sra" =
 
 let%test "roundtrip csrrwi" =
   roundtrip (Csr { op = Csrrw; rd = 1; src = Imm (Int32.of_int_exn 5); csr = 0x123 })
+;;
+
+let%test "roundtrip system instructions" =
+  List.for_all [ Ecall; Ebreak; Mret ] ~f:roundtrip
 ;;
 
 (* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31})

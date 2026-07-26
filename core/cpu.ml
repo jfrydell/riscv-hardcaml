@@ -8,6 +8,7 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; from_l1d : 'a Memory.L1d_cache.To_pipe.t
     ; from_l1i : 'a Memory.L1i_cache.To_pipe.t
+    ; request_interrupt : 'a
     }
   [@@deriving hardcaml]
 end
@@ -338,12 +339,12 @@ let create scope (i : _ I.t) =
     Privileged.Trap.hierarchical
       ~scope
       { clocking = i.clocking
-      ; m_status = { valid = is_insn M; stall = stall_memory }
+      ; m_stage = { valid = is_insn M; stall = stall_memory }
       ; pc = pc M
       ; next_pc = next_pc M
-      ; exception_request = gnd
-      ; interrupt_request = gnd
-      ; explicit_csr = { insn = insn M; rs1 = rs1val M; valid = is_csr M }
+      ; detect_exception = { insn = insn M; rs1 = rs1val M; csrs }
+      ; interrupt_request =
+          { valid = i.request_interrupt; value = of_int_trunc ~width:4 11 }
       }
   in
   trap_active <-- trap.trap_active;

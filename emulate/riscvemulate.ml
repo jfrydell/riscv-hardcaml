@@ -7,6 +7,7 @@ module Random = Random
 let with_mem memory =
   { regs = Array.create ~len:32 Int32.zero
   ; csrs = Array.create ~len:4096 Int32.zero
+  ; privilege = ref 3
   ; pc = ref Int32.zero
   ; memory = Hashtbl.copy memory
   }
@@ -29,6 +30,7 @@ let init ~insns ~addr =
     insns;
   { regs = Array.create ~len:32 Int32.zero
   ; csrs = Array.create ~len:4096 Int32.zero
+  ; privilege = ref 3
   ; pc = ref Int32.zero
   ; memory
   }

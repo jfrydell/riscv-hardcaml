@@ -5,9 +5,30 @@
  (preprocess
   (pps ppx_jane)))
 
+(library
+ (name trap_test_utils)
+ (modules trap_test_utils)
+ (libraries core riscvemulate sim)
+ (preprocess
+  (pps ppx_jane)))
+
 (tests
- (names basic fuzz_tests csr_tests trap_csr_tests)
- (modules basic fuzz_tests csr_tests trap_csr_tests)
- (libraries core hardcaml privileged riscvemulate sim fuzz test_definitions)
+ (names basic fuzz_tests csr_tests trap_csr_tests trap_tests trap_fuzz_tests)
+ (modules
+  basic
+  fuzz_tests
+  csr_tests
+  trap_csr_tests
+  trap_tests
+  trap_fuzz_tests)
+ (libraries
+  core
+  hardcaml
+  privileged
+  riscvemulate
+  sim
+  fuzz
+  test_definitions
+  trap_test_utils)
  (preprocess
   (pps ppx_jane ppx_hardcaml ppx_sexp_conv)))

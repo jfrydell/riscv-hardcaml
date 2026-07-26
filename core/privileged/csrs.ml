@@ -4,6 +4,8 @@ open Hardcaml
 type 'a t =
   { mstatus : 'a [@bits 32]
   ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
+  ; mie : 'a [@bits 32]
+  ; mtvec : 'a [@bits 32]
   ; sepc : 'a [@bits 32]
   ; scause : 'a [@bits 32]
   ; stval : 'a [@bits 32]
@@ -22,6 +24,8 @@ type 'a t =
 let addresses =
   { mstatus = 0x300
   ; mstatush = 0x301
+  ; mie = 0x304
+  ; mtvec = 0x305
   ; sepc = 0x141
   ; scause = 0x142
   ; stval = 0x143

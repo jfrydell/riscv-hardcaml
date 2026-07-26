@@ -19,6 +19,13 @@ module Op = struct
   let env = of_bit_string "1110011"
 end
 
+(** Exact encodings of the supported non-CSR system instructions. *)
+module System_insn = struct
+  let ecall = of_hex ~width:32 "00000073"
+  let ebreak = of_hex ~width:32 "00100073"
+  let mret = of_hex ~width:32 "30200073"
+end
+
 (** Values of funct3 for branches and ALU operations. *)
 module Funct3 = struct
   include Types.Scalar (struct

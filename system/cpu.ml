@@ -26,6 +26,7 @@ module Make (Config : Config) = struct
   module I = struct
     type 'a t =
       { clocking : 'a Types.Clocking.t
+      ; request_interrupt : 'a
       ; rd_from_mem : 'a Memory.Iface.Read_block.From_mem.t list [@length cache_rds]
       ; wt_from_mem : 'a Memory.Iface.Write_through.From_mem.t list [@length cache_wts]
       ; wb_from_mem : 'a Memory.Iface.Write_back.From_mem.t list [@length cache_wbs]
@@ -43,7 +44,10 @@ module Make (Config : Config) = struct
     [@@deriving hardcaml]
   end
 
-  let create scope ({ clocking; rd_from_mem; wt_from_mem; wb_from_mem } : _ I.t) =
+  let create
+    scope
+    ({ clocking; request_interrupt; rd_from_mem; wt_from_mem; wb_from_mem } : _ I.t)
+    =
     (* Exercise translation stalls through both L1 caches until real page-table
        translation is implemented. *)
     let mmu_state =
@@ -64,7 +68,11 @@ module Make (Config : Config) = struct
     let%hw.Riscv_core.Cpu.O.Of_signal core =
       Riscv_core.Cpu.hierarchical
         ~scope
-        { clocking; from_l1d = core_from_l1d; from_l1i = core_from_l1i }
+        { clocking
+        ; from_l1d = core_from_l1d
+        ; from_l1i = core_from_l1i
+        ; request_interrupt
+        }
     in
     (* Instantiate L1 I-cache. *)
     let%hw.Memory.Iface.Read_block.From_mem.Of_signal l1i_read_from_mem =

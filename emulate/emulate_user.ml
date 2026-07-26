@@ -6,6 +6,7 @@ open! Base
 type state =
   { regs : int32 Array.t
   ; csrs : int32 Array.t
+  ; privilege : int ref
   ; pc : int32 ref
   ; memory : (int32, int) Hashtbl.t
   (* Byte-addressed memory (range 0-255), defaulting to zero *)
@@ -14,6 +15,7 @@ type state =
 
 let regs { regs; _ } = regs
 let csrs { csrs; _ } = csrs
+let privilege { privilege; _ } = !privilege
 let pc { pc; _ } = !pc
 let memory { memory; _ } = memory
 
@@ -126,11 +128,84 @@ let is_unaligned_access ~regs ~insn =
   | None -> false
 ;;
 
+(** Convert a CSR write into a legal value to match processor behavior for WARL, RARL, and
+    read-legal registers. *)
+let legalize_csr_write ~csr value =
+  let open Riscv.Csr_address in
+  if csr = mstatus
+  then (
+    let allowed_mask = Int32.of_int_exn 0x007e19aa in
+    let value = Int32.(value land allowed_mask) in
+    let mpp = Int32.(to_int_exn ((value lsr 11) land of_int_exn 3)) in
+    if mpp = 2 then Int32.(value lor (of_int_exn 3 lsl 11)) else value)
+  else if csr = mstatush
+  then Int32.zero
+  else if csr = mie
+  then Int32.(value land (of_int_exn 1 lsl 11))
+  else if csr = mtvec
+  then (
+    let mode = Int32.(to_int_exn (value land of_int_exn 3)) in
+    if mode <= 1 then value else Int32.(value land lnot (of_int_exn 3)))
+  else if csr = mepc || csr = sepc
+  then Int32.(value land lnot (of_int_exn 3))
+  else value
+;;
+
+(** Update CSRs for a machine-level trap, returning the trap handler PC to execute from. *)
+let take_machine_trap { csrs; privilege; _ } ~epc ~cause ~trap_value ~interrupt =
+  let open Riscv.Csr_address in
+  let mstatus_value = csrs.(mstatus) in
+  let mie_value = Int32.(to_int_exn ((mstatus_value lsr 3) land one)) in
+  let cleared_fields =
+    Int32.(
+      mstatus_value
+      land lnot ((of_int_exn 1 lsl 3) lor (of_int_exn 1 lsl 7) lor (of_int_exn 3 lsl 11)))
+  in
+  csrs.(mstatus)
+  <- Int32.(
+       cleared_fields lor (of_int_exn mie_value lsl 7) lor (of_int_exn !privilege lsl 11));
+  csrs.(mepc) <- Int32.(epc land lnot (of_int_exn 3));
+  csrs.(mcause) <- cause;
+  csrs.(mtval) <- trap_value;
+  privilege := 3;
+  let mtvec_value = csrs.(mtvec) in
+  let base = Int32.(mtvec_value land lnot (of_int_exn 3)) in
+  let vectored = interrupt && Int32.(mtvec_value land of_int_exn 3 = one) in
+  if vectored
+  then (
+    let cause_number = Int32.(to_int_exn (cause land of_int_exn 0x7fff_ffff)) in
+    Int32.(base + of_int_exn Int.(4 * cause_number)))
+  else base
+;;
+
+(** Update CSRs for an mret instruction, returning the PC to resume from. *)
+let execute_mret { csrs; privilege; _ } =
+  let open Riscv.Csr_address in
+  let mstatus_value = csrs.(mstatus) in
+  let mpie = Int32.(to_int_exn ((mstatus_value lsr 7) land one)) in
+  let mpp = Int32.(to_int_exn ((mstatus_value lsr 11) land of_int_exn 3)) in
+  let clear_mask =
+    Int32.(
+      (of_int_exn 1 lsl 3)
+      lor (of_int_exn 1 lsl 7)
+      lor (of_int_exn 3 lsl 11)
+      lor if Int.equal mpp 3 then zero else of_int_exn 1 lsl 17)
+  in
+  csrs.(mstatus)
+  <- Int32.(
+       mstatus_value
+       land lnot clear_mask
+       lor (of_int_exn mpie lsl 3)
+       lor (of_int_exn 1 lsl 7));
+  privilege := mpp;
+  csrs.(mepc)
+;;
+
 (** Execute 1 instruction on the emulator, updating its state *)
-let step { regs; csrs; pc; memory } =
+let step ({ regs; csrs; privilege; pc; memory } as state) =
   let open Riscv in
   (* Read instruction and convert to expected format *)
-  let insn = current_pc_insn { regs; csrs; pc; memory } in
+  let insn = current_pc_insn state in
   (* Stdlib.print_endline (Sexp.to_string_hum (sexp_of_insn insn)); *)
   (* Interpeter helpers *)
   let alu rd rs1 src2 op =
@@ -148,7 +223,7 @@ let step { regs; csrs; pc; memory } =
     | And -> regs.(rd) <- Int32.(src1 land src2)
   in
   (* Calculate next PC (must happen before main computation for jalr updating same reg it reads) *)
-  let next_pc = next_pc ~regs ~pc:!pc ~insn in
+  let next_pc = ref (next_pc ~regs ~pc:!pc ~insn) in
   (* Instruction dispatch *)
   (match insn with
    | IntReg (op, { rd; rs1; rs2 }) -> alu rd rs1 regs.(rs2) op
@@ -184,10 +259,38 @@ let step { regs; csrs; pc; memory } =
        | Csrrc -> Int32.(old_value land lnot operand)
      in
      regs.(rd) <- old_value;
-     if writes then csrs.(csr) <- new_value
-   | Env -> failwith "Env call");
+     if writes then csrs.(csr) <- legalize_csr_write ~csr new_value
+   | Ecall ->
+     let cause =
+       Int32.of_int_exn
+         (match !privilege with
+          | 0 -> 8
+          | 1 -> 9
+          | _ -> 11)
+     in
+     next_pc
+     := take_machine_trap state ~epc:!pc ~cause ~trap_value:Int32.zero ~interrupt:false
+   | Ebreak ->
+     next_pc
+     := take_machine_trap
+          state
+          ~epc:!pc
+          ~cause:(Int32.of_int_exn 3)
+          ~trap_value:Int32.zero
+          ~interrupt:false
+   | Mret ->
+     if !privilege = 3
+     then next_pc := execute_mret state
+     else
+       next_pc
+       := take_machine_trap
+            state
+            ~epc:!pc
+            ~cause:(Int32.of_int_exn 2)
+            ~trap_value:(Riscv.to_int32 Mret)
+            ~interrupt:false);
   (* Preserve r0 *)
   regs.(0) <- Int32.zero;
   (* Update PC *)
-  pc := next_pc
+  pc := !next_pc
 ;;

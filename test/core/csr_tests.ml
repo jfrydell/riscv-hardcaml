@@ -5,6 +5,7 @@ module Csr_bank_sim =
   Cyclesim.With_interface (Privileged.Csr_bank.I) (Privileged.Csr_bank.O)
 
 let csr_address = Privileged.Csrs.addresses.custom0
+let addresses = Privileged.Csrs.addresses
 
 let program =
   let open Riscvemulate in
@@ -18,13 +19,42 @@ let program =
   ; Csr { op = Csrrc; rd = 7; src = Reg 9; csr = csr_address }
   ; Csr { op = Csrrs; rd = 10; src = Reg 0; csr = csr_address }
   ; Csr { op = Csrrc; rd = 11; src = Imm Int32.zero; csr = csr_address }
+  ; IntImm (Add, { rd = 12; rs1 = 0; imm = Int32.of_int_exn 0x83 })
+  ; Csr { op = Csrrw; rd = 13; src = Reg 12; csr = addresses.mtvec }
+  ; Csr { op = Csrrs; rd = 14; src = Reg 0; csr = addresses.mtvec }
+  ; IntImm (Add, { rd = 15; rs1 = 0; imm = Int32.minus_one })
+  ; Csr { op = Csrrw; rd = 16; src = Reg 15; csr = addresses.mie }
+  ; Csr { op = Csrrs; rd = 17; src = Reg 0; csr = addresses.mie }
+  ; IntImm (Add, { rd = 18; rs1 = 0; imm = Int32.of_int_exn 0x105 })
+  ; Csr { op = Csrrw; rd = 19; src = Reg 18; csr = addresses.mepc }
+  ; Csr { op = Csrrs; rd = 20; src = Reg 0; csr = addresses.mepc }
+  ; Lui { rd = 21; imm = Int32.of_int_exn 0x1000 }
+  ; Csr { op = Csrrw; rd = 22; src = Reg 21; csr = addresses.mstatus }
+  ; Csr { op = Csrrs; rd = 23; src = Reg 0; csr = addresses.mstatus }
   ]
 ;;
 
 let expected_regs =
   let regs = Array.create ~len:32 Int32.zero in
   List.iter
-    [ 2, 0x5; 3, 0x7; 4, 0x6; 6, 0xa5; 7, 0xaf; 8, 0xa5; 9, 0x0f; 10, 0xa0; 11, 0xa0 ]
+    [ 2, 0x5
+    ; 3, 0x7
+    ; 4, 0x6
+    ; 6, 0xa5
+    ; 7, 0xaf
+    ; 8, 0xa5
+    ; 9, 0x0f
+    ; 10, 0xa0
+    ; 11, 0xa0
+    ; 12, 0x83
+    ; 14, 0x80
+    ; 15, -1
+    ; 17, 0x800
+    ; 18, 0x105
+    ; 20, 0x104
+    ; 21, 0x1000
+    ; 23, 0x1800
+    ]
     ~f:(fun (register, value) -> regs.(register) <- Int32.of_int_exn value);
   regs
 ;;

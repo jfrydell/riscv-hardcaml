@@ -5,7 +5,7 @@ open Signal
 (** The state of the M stage instruction, used to time the triggering of traps correctly.
 
     If [valid] and not [stall], the instruction in M is completing this cycle. *)
-module M_status = struct
+module M_stage_state = struct
   type 'a t =
     { valid : 'a
     ; stall : 'a
@@ -13,18 +13,39 @@ module M_status = struct
   [@@deriving hardcaml]
 end
 
+module Action = struct
+  type 'a t =
+    { exception_ : 'a
+    ; explicit_csr : 'a
+    ; mret : 'a
+    ; interrupt : 'a
+    }
+  [@@deriving hardcaml]
+
+  (** Select at most one action, in synchronous instruction order followed by an interrupt
+      at the resulting instruction boundary. *)
+  let prioritize possible =
+    let exception_ = possible.exception_ in
+    let explicit_csr = possible.explicit_csr &&: ~:exception_ in
+    let mret = possible.mret &&: ~:(exception_ ||: explicit_csr) in
+    let interrupt = possible.interrupt &&: ~:(exception_ ||: explicit_csr ||: mret) in
+    { exception_; explicit_csr; mret; interrupt }
+  ;;
+
+  let any t = reduce ~f:( |: ) (to_list t)
+  let is_machine_trap t = t.exception_ ||: t.interrupt
+end
+
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; m_status : 'a M_status.t
+    ; m_stage : 'a M_stage_state.t
     ; pc : 'a [@bits 32] (** PC of the instruction in M. *)
     ; next_pc : 'a [@bits 32] (** PC which will execute after the instruction in M. *)
-    ; exception_request : 'a (** The instruction in M has encountered an exception. *)
-    ; interrupt_request : 'a (** Requests an interrupt to be triggered. *)
-    ; explicit_csr : 'a Explicit_csr.Decode.I.t
-    (** The instruction in M is a CSR update, triggering the same trap mechanism to squash
-        later instructions, but then resuming execution at the next instruction instead of
-        at a trap handler. *)
+    ; detect_exception : 'a Detect_exception.I.t
+    ; interrupt_request : 'a With_valid.t [@bits 4]
+    (** Requests an interrupt with the given number (11 = machine external interrupt is
+        the only one we support right now). *)
     }
   [@@deriving hardcaml]
 end
@@ -48,59 +69,83 @@ end
 
 let create
   scope
-  ({ clocking; m_status; pc; next_pc; exception_request; interrupt_request; explicit_csr } :
-    _ I.t)
+  ({ clocking; m_stage; pc; next_pc; detect_exception; interrupt_request } : _ I.t)
   : _ O.t
   =
   (* As long as M is not stalled (in which case we must wait for it to complete
      successfully before interrupt or complete with an exception), we can
      trigger a trap. *)
   let%hw trap_started = wire 1 in
-  let%hw trap_allowed = ~:trap_started &&: m_status.valid &&: ~:(m_status.stall) in
-  let%hw start_trap =
-    trap_allowed &&: (exception_request ||: interrupt_request ||: explicit_csr.valid)
+  let%hw.Csrs.Of_signal csrs = Csrs.Of_signal.wires () in
+  let%hw.Detect_exception.O.Of_signal detected =
+    Detect_exception.hierarchical ~scope detect_exception
   in
-  (* TODO: not sure on priority if multiple occur on same cycle. CSR must come
-     before interrupt (as read will commit), but we could accept the interrupt
-     and squash_M and it would be fine. if CSR can have exception, should handle
-     exception first. other than that, doesn't matter (so if squash_M on CSR +
-     interrupt, then we could but interrupt first) *)
-  let%hw _start_exception = trap_allowed &&: exception_request in
-  let%hw start_explicit_csr_update =
-    trap_allowed &&: ~:exception_request &&: explicit_csr.valid
+  let mstatus = Csrs.Mstatus.Fields.of_register csrs.mstatus in
+  let%hw interrupt_enabled = csrs.mie.:(11) &&: (csrs.privilege <>:. 3 ||: mstatus.mie) in
+  let%hw can_start = ~:trap_started &&: m_stage.valid &&: ~:(m_stage.stall) in
+  let%hw.Action.Of_signal start =
+    Action.prioritize
+      { exception_ = detected.exception_request.valid
+      ; explicit_csr = detected.explicit_csr.valid
+      ; mret = detected.mret
+      ; interrupt = interrupt_request.valid &&: interrupt_enabled
+      }
+    |> Action.map ~f:(fun requested -> can_start &&: requested)
   in
-  let%hw _start_interrupt =
-    trap_allowed &&: ~:(exception_request ||: explicit_csr.valid) &&: ~:interrupt_request
-  in
+  let%hw action_start = Action.any start in
   (* If the instruction in M has an exception, it cannot be allowed to
      complete, and our EPC is that instruction. Otherwise, it is allowed to
      proceed, and EPC is the next instruction after the last one to finish M
      (including the one currently completing). *)
-  let%hw squash_M = exception_request in
+  let%hw squash_M = start.exception_ in
   let%hw next_pc_latched =
+    Types.Clocking.cut_through_reg clocking ~enable:can_start next_pc
+  in
+  let%hw epc = mux2 squash_M pc next_pc_latched in
+  (* Go to trap handler PC from mtvec on trap, to epc on return, and to next PC
+     if this is just a CSR update. *)
+  let%hw mtvec_base = csrs.mtvec.:[31, 2] @: zero 2 in
+  let%hw mtvec_vectored =
+    mtvec_base |: uresize ~width:32 (sll interrupt_request.value ~by:2)
+  in
+  let%hw mtvec_use_vectored = start.interrupt &&: (csrs.mtvec.:[1, 0] ==:. 1) in
+  let%hw redirect_pc =
     Types.Clocking.cut_through_reg
       clocking
-      ~enable:(m_status.valid &&: ~:(m_status.stall))
-      next_pc
-  in
-  let%hw epc =
-    Types.Clocking.reg clocking ~enable:start_trap (mux2 squash_M pc next_pc_latched)
+      ~enable:action_start
+      (mux2 mtvec_use_vectored mtvec_vectored
+       @@ mux2 start.mret csrs.mepc
+       @@ mux2 start.explicit_csr next_pc_latched
+       @@ mtvec_base)
   in
   (* Update CSRs when trap begins. *)
   let%hw.Csr_bank.O.Of_signal csr_bank =
     Csr_bank.hierarchical
       ~scope
       { clocking
-      ; explicit_write = { explicit_csr with valid = start_explicit_csr_update }
-      ; trap_write = Trap_csr.Decode.I.Of_signal.zero ()
+      ; explicit_write = { detected.explicit_csr with valid = start.explicit_csr }
+      ; trap_write =
+          { epc
+          ; trap_value = mux2 start.exception_ detected.exception_request.value (zero 32)
+          ; cause =
+              mux2
+                start.exception_
+                detected.exception_request.cause
+                (vdd @: zero 27 @: interrupt_request.value)
+          ; csrs
+          ; trap = Action.is_machine_trap start
+          ; mret = start.mret
+          ; sret = gnd
+          }
       }
   in
+  Csrs.Of_signal.assign csrs csr_bank.csrs;
   (* The trap is finished once the CSR update goes through. *)
-  trap_started <-- Utils.sr ~set:start_trap ~reset:csr_bank.write_done clocking;
-  ({ trap_active = start_trap ||: trap_started
+  trap_started <-- Utils.sr ~set:action_start ~reset:csr_bank.write_done clocking;
+  ({ trap_active = action_start ||: trap_started
    ; squash_M
-   ; handler_pc = { value = epc; valid = csr_bank.write_done }
-   ; csrs = csr_bank.csrs
+   ; handler_pc = { value = redirect_pc; valid = csr_bank.write_done }
+   ; csrs
    }
    : _ O.t)
 ;;

@@ -51,6 +51,9 @@ end
 (** Apply CSR writes to registers, respecting any read-only and read-legal requirements. *)
 let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
   let all_legal ~old_value:_ ~new_value = new_value in
+  let align_to ~lsbs ~old_value:_ ~new_value =
+    new_value &: ones (32 - lsbs) @: zero lsbs
+  in
   (* TODO: changes with current privilege level probably? haven't looked at how that works *)
   let update_funs : _ Csrs.t =
     { mstatus =
@@ -59,18 +62,24 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
           let mpp = mux2 (fields.mpp ==:. 2) (ones 2) fields.mpp in
           Csrs.Mstatus.Fields.to_register { fields with mpp })
     ; mstatush = (fun ~old_value:_ ~new_value:_ -> zero 32)
+    ; mie =
+        (fun ~old_value:_ ~new_value ->
+          (* Only machine external interrupts are implemented. *)
+          new_value &: of_int_trunc ~width:32 (1 lsl 11))
+    ; mtvec =
+        (fun ~old_value:_ ~new_value ->
+          let mode = new_value.:[1, 0] in
+          let legal_mode = mux2 (mode <=:. 1) mode (zero 2) in
+          new_value.:[31, 2] @: legal_mode)
     ; sepc =
         (fun ~old_value:_ ~new_value ->
           (* Must preserve alignment. *)
           new_value &: ones 30 @: zero 2)
     ; scause = all_legal
     ; stval = all_legal
-    ; mepc =
-        (fun ~old_value:_ ~new_value ->
-          (* Must preserve alignment. *)
-          new_value &: ones 30 @: zero 2)
+    ; mepc = align_to ~lsbs:2
     ; mcause = all_legal
-    ; mtval = all_legal
+    ; mtval = align_to ~lsbs:6
     ; custom0 = all_legal
     ; custom1 = all_legal
     ; custom2 = all_legal

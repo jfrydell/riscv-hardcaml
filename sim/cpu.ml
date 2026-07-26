@@ -88,8 +88,10 @@ let create
   let sim = Sim.create ~config (Cpu.create scope) in
   let backing_memory = Hashtbl.copy memory in
   let l2_cache_state = find_l2_cache_state sim in
-  Cyclesim.cycle_check sim;
-  Cyclesim.cycle_before_clock_edge sim;
+  let inputs = Cyclesim.inputs sim in
+  inputs.clocking.clear := Bits.vdd;
+  Cyclesim.cycle sim;
+  inputs.clocking.clear := Bits.gnd;
   match waves with
   | No_waves ->
     { sim
@@ -235,6 +237,10 @@ let memory { backing_memory; l2_cache_state; _ } =
 let cycle t =
   cycle_external t;
   Cyclesim.cycle t.sim
+;;
+
+let set_interrupt { sim; _ } requested =
+  (Cyclesim.inputs sim).request_interrupt := Bits.of_bool requested
 ;;
 
 (* Get the current PC from the simulator *)
