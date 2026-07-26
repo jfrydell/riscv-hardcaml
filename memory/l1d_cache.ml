@@ -5,9 +5,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Iface.addr_width
-let bus_width = Iface.cpu_bus_width
-let block_size_bits = Iface.block_size_bits
+let addr_width = Memory_bus.Bus.addr_width
+let bus_width = Memory_bus.Bus.cpu_bus_width
+let block_size_bits = Memory_bus.Bus.block_size_bits
 
 (* 512 * 32B blocks = 131 KB L1 cache. *)
 let num_sets = 512
@@ -96,19 +96,16 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; mmu_state : 'a Mmu.State.t
     ; from_pipeline : 'a From_pipe.t
-    ; write_from_mem : 'a Iface.Write_through.From_mem.t
-    ; read_from_mem : 'a Iface.Read_block.From_mem.t
-    ; walker_from_mem : 'a Iface.Read_word.From_mem.t
-    (* TODO: unified bus and put arbiter internally? *)
+    ; cache_from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; walker_from_mem : 'a Memory_bus.Bus.From_mem.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { write_to_mem : 'a Iface.Write_through.To_mem.t
-    ; read_to_mem : 'a Iface.Read_block.To_mem.t
-    ; walker_to_mem : 'a Iface.Read_word.To_mem.t
+    { cache_to_mem : 'a Memory_bus.Bus.To_mem.t
+    ; walker_to_mem : 'a Memory_bus.Bus.To_mem.t
     ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
@@ -125,8 +122,7 @@ end
 
 let create
   scope
-  ({ clocking; mmu_state; from_pipeline; write_from_mem; read_from_mem; walker_from_mem } :
-    _ I.t)
+  ({ clocking; mmu_state; from_pipeline; cache_from_mem; walker_from_mem } : _ I.t)
   =
   (* A load missed in the cache, so we must stall and fill the cache line. *)
   let%hw load_miss = wire 1 in
@@ -232,12 +228,12 @@ let create
       ~size:num_words
       ~write_ports:
         [| { write_clock = clocking.clock
-           ; write_enable = store_hit ||: read_from_mem.valid
+           ; write_enable = store_hit ||: (load_miss &&: cache_from_mem.valid)
            ; (* Could probably register load_miss here and elsewhere for timing, as
                we don't need it to rise immediately and know when it will lower. *)
              write_address =
-               extract_word (mux2 load_miss read_from_mem.addr active_access.addr)
-           ; write_data = mux2 load_miss read_from_mem.data store_word
+               extract_word (mux2 load_miss cache_from_mem.addr active_access.addr)
+           ; write_data = mux2 load_miss cache_from_mem.data store_word
            }
         |]
       ~read_ports:
@@ -251,19 +247,36 @@ let create
   in
   loaded_word <-- data_mem.(0);
   (* Stores stall until acknowledged by memory (or a write buffer). *)
-  store_stall <-- (store_request &&: ~:(write_from_mem.store_ready));
+  store_stall <-- (store_request &&: ~:(cache_from_mem.ready));
   (* When a load has missed, request the block from memory until we receive the
      last word to fill the block back from memory. *)
-  update_tag <-- (load_miss &&: read_from_mem.last &&: read_from_mem.valid);
-  ({ write_to_mem =
-       { addr = active_access.addr
-       ; store = store_request
-       ; store_size = active_access.size
-       ; store_data = active_access.store_data
-       }
-   ; read_to_mem = { addr = active_access.addr; load = load_miss &&: ~:update_tag }
-   ; to_pipeline = { load_data; stall }
+  update_tag <-- (load_miss &&: cache_from_mem.last &&: cache_from_mem.valid);
+  let%hw.Memory_bus.Bus.To_mem.Of_signal write_to_mem =
+    { valid = store_request
+    ; access_type = Memory_bus.Bus.Access_type.write_through
+    ; addr = active_access.addr
+    ; data = uresize ~width:bus_width active_access.store_data
+    ; store_size = active_access.size
+    ; last = vdd
+    }
+  in
+  let%hw.Memory_bus.Bus.To_mem.Of_signal read_to_mem =
+    { valid = load_miss &&: ~:update_tag
+    ; access_type = Memory_bus.Bus.Access_type.read_block
+    ; addr = active_access.addr
+    ; data = zero bus_width
+    ; store_size = zero 2
+    ; last = gnd
+    }
+  in
+  (* Loads and stores are mutually exclusive, and responses are ignored unless the
+     corresponding access is outstanding. *)
+  let%hw.Memory_bus.Bus.To_mem.Of_signal cache_to_mem =
+    Memory_bus.Bus.To_mem.Of_signal.mux2 read_to_mem.valid read_to_mem write_to_mem
+  in
+  ({ cache_to_mem
    ; walker_to_mem = translation.walker_to_mem
+   ; to_pipeline = { load_data; stall }
    }
    : _ O.t)
 ;;

@@ -2,88 +2,74 @@ open! Core
 open! Hardcaml
 open Signal
 
-module type Config = sig
-  module Req : Interface.S
-  module Resp : Interface.S
+let ensure_fairness scope ~clocking ~req_bits ~rotate =
+  let%hw_list rotating_priority =
+    let bits = List.map req_bits ~f:(fun _ -> wire 1) in
+    let reg = Types.Clocking.reg clocking ~enable:rotate in
+    List.iter2_exn (List.tl_exn bits) (List.drop_last_exn bits) ~f:(fun next prev ->
+      next <-- reg prev);
+    List.hd_exn bits <-- reg ~clear_to:vdd (List.last_exn bits);
+    bits
+  in
+  let%hw_list req_prioritized = List.map2_exn req_bits rotating_priority ~f:( &: ) in
+  let%hw someone_prioritized = tree ~arity:3 ~f:(reduce ~f:( |: )) req_prioritized in
+  List.map2_exn req_bits req_prioritized ~f:(fun request prioritized ->
+    prioritized ||: (request &&: ~:someone_prioritized))
+;;
 
-  val req_valid : t Req.t -> t
-  val resp_done : t Resp.t -> t
-  val mask_resp_valid : resp:t Resp.t -> t -> t Resp.t
-end
+(** Arbitrate all unified memory-bus access types. Selection is held until [ready]
+    completes the transaction, and both response data and [ready] are returned only to the
+    requester that owns the transaction. *)
+let arb scope ~clocking ~reqs ~(resp : _ Memory_bus.Bus.From_mem.t) =
+  let num_reqs = List.length reqs in
+  let%hw_list valid_reqs =
+    List.map reqs ~f:(fun (request : _ Memory_bus.Bus.To_mem.t) -> request.valid)
+  in
+  let%hw owner_mask = wire num_reqs in
+  let%hw owner_active = reduce ~f:( |: ) (bits_lsb owner_mask) in
+  let%hw completing = owner_active &&: resp.ready in
+  (* A requester keeps [valid] high through its completion cycle, so it must not be
+     mistaken for a new request. Other requesters may be handed directly to the receiver
+     on that cycle. *)
+  let%hw_list eligible_reqs =
+    List.map2_exn valid_reqs (bits_lsb owner_mask) ~f:(fun valid owns_transaction ->
+      valid &&: (~:completing ||: ~:owns_transaction))
+  in
+  let%hw_list fair_valid_reqs =
+    ensure_fairness scope ~clocking ~req_bits:eligible_reqs ~rotate:completing
+  in
+  let masks_with_valid =
+    List.mapi fair_valid_reqs ~f:(fun index valid ->
+      { With_valid.value = of_int_trunc ~width:num_reqs (1 lsl index); valid })
+  in
+  let grant = priority_select masks_with_valid in
+  let%hw grant_mask = mux2 grant.valid grant.value (zero num_reqs) in
+  owner_mask
+  <-- Types.Clocking.reg clocking ~enable:(~:owner_active ||: completing) grant_mask;
+  let%hw choose_new_request = ~:owner_active ||: completing in
+  let%hw selected_mask = mux2 choose_new_request grant_mask owner_mask in
+  let reqs_with_valid =
+    List.map2_exn reqs (bits_lsb selected_mask) ~f:(fun value valid ->
+      { With_valid.value; valid })
+  in
+  let selected_req = Memory_bus.Bus.To_mem.Of_signal.priority_select reqs_with_valid in
+  let%hw.Memory_bus.Bus.To_mem.Of_signal req =
+    { selected_req.value with valid = selected_req.valid }
+  in
+  (* The completing response still belongs to the old owner even though [req] may already
+     contain the next request. Responses cannot arrive until the request owner has been
+     latched. *)
+  let%hw response_mask = owner_mask in
+  let resps =
+    List.map (bits_lsb response_mask) ~f:(fun owns_response ->
+      { resp with
+        valid = resp.valid &&: owns_response
+      ; ready = resp.ready &&: owns_response
+      })
+  in
+  req, resps
+;;
 
-module Make (Config : Config) = struct
-  (** Ensure fairness for requests with a round-robin priority bit. If the prioritized
-      request isn't asserted, this is ignored, but it ensures fairness in that a requestor
-      will always be chosen one in N times where N is the number of requestors (just not
-      for N the number of active requestors). *)
-  let ensure_fairness scope ~clocking ~req_bits ~rotate =
-    let%hw_list rotating_priority =
-      let bits = List.map req_bits ~f:(fun _ -> wire 1) in
-      let reg = Types.Clocking.reg clocking ~enable:rotate in
-      List.iter2_exn (List.tl_exn bits) (List.drop_last_exn bits) ~f:(fun next prev ->
-        next <-- reg prev);
-      List.hd_exn bits <-- reg ~clear_to:vdd (List.last_exn bits);
-      bits
-    in
-    let%hw_list req_prioritized = List.map2_exn req_bits rotating_priority ~f:( &: ) in
-    let%hw someone_prioritized = tree ~arity:3 ~f:(reduce ~f:( |: )) req_prioritized in
-    List.map2_exn req_bits req_prioritized ~f:(fun r p ->
-      p ||: (r &&: ~:someone_prioritized))
-  ;;
-
-  (** Creates an arbiter combining several [reqs] into one, and returning several [resp]s,
-      with only the most recent requestor set to valid. Earlier [reqs] are prioritized in
-      general but a priority bit rotating between all [reqs] ensures fairness if all are
-      requesting constantly. *)
-  let arb scope ~clocking ~reqs ~resp =
-    let%hw_list valid_reqs = List.map reqs ~f:Config.req_valid in
-    let%hw_list fair_valid_reqs =
-      ensure_fairness scope ~clocking ~req_bits:valid_reqs ~rotate:(Config.resp_done resp)
-    in
-    let%hw_list selected_valid = List.map reqs ~f:(fun _ -> wire 1) in
-    (* Select a new requestor when a response arrives, or if we weren't selecting anyone on the previous cycle. *)
-    let%hw select_new =
-      Config.resp_done resp
-      ||: ~:(tree ~arity:3 ~f:(reduce ~f:( |: )) selected_valid
-             |> Types.Clocking.reg clocking)
-    in
-    List.iter2_exn selected_valid fair_valid_reqs ~f:(fun selected valid ->
-      selected <-- Types.Clocking.cut_through_reg clocking ~enable:select_new valid);
-    (* Request is priority-selected from valid ones. *)
-    let reqs_with_valid =
-      List.map2_exn reqs selected_valid ~f:(fun value valid ->
-        { With_valid.value; valid })
-    in
-    let req = (Config.Req.Of_signal.priority_select reqs_with_valid).value in
-    (* Response is forwarded to whoever had the last accepted request. This is
-       just whoever was selected on the previous cycle, as selection is held
-       until we get a response. *)
-    let masks_with_valid =
-      List.mapi selected_valid ~f:(fun i valid ->
-        { With_valid.value = of_int_trunc ~width:(List.length reqs) (1 lsl i); valid })
-    in
-    let%hw resp_mask =
-      Types.Clocking.reg clocking (priority_select masks_with_valid).value
-    in
-    let resps = List.map (bits_lsb resp_mask) ~f:(Config.mask_resp_valid ~resp) in
-    req, resps
-  ;;
-
-  let hierarchical ~scope ~clocking ~reqs ~resp =
-    arb (Scope.sub_scope scope "arb") ~clocking ~reqs ~resp
-  ;;
-end
-
-module Arb_read = Make (struct
-    module Req = Iface.Read_block.To_mem
-    module Resp = Iface.Read_block.From_mem
-
-    let req_valid ({ load; _ } : _ Req.t) = load
-    let resp_done ({ valid; last; _ } : _ Resp.t) = valid &&: last
-
-    let mask_resp_valid ~(resp : _ Resp.t) valid =
-      { resp with valid = resp.valid &&: valid }
-    ;;
-  end)
-
-let arb_rd = Arb_read.hierarchical
+let hierarchical ~scope ~clocking ~reqs ~resp =
+  arb (Scope.sub_scope scope "arb") ~clocking ~reqs ~resp
+;;

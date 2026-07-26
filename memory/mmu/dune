@@ -1,5 +1,5 @@
 (library
  (name mmu)
- (libraries core hardcaml utils)
+ (libraries core hardcaml utils memory_bus)
  (preprocess
   (pps ppx_jane ppx_hardcaml)))

@@ -114,24 +114,3 @@ module Translation = struct
     }
   ;;
 end
-
-(** A one-word memory transaction used by the page-table walker. [load] is a one-cycle
-    request pulse; [valid] identifies the corresponding returned word. *)
-module Read_word = struct
-  module To_mem = struct
-    type 'a t =
-      { addr : 'a [@bits addr_width]
-      ; load : 'a
-      }
-    [@@deriving hardcaml]
-  end
-
-  module From_mem = struct
-    type 'a t =
-      { data : 'a [@bits addr_width]
-      ; addr : 'a [@bits addr_width]
-      ; valid : 'a
-      }
-    [@@deriving hardcaml]
-  end
-end

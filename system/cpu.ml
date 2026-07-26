@@ -15,39 +15,24 @@ module type Config = sig
 end
 
 module Make (Config : Config) = struct
-  (** Number of cache block read, write-through, and write-back interfaces needed at the
-      top level. *)
-  let cache_rds, cache_wts, cache_wbs =
-    match Config.caches with
-    | L1s -> 2, 1, 0
-    | L2 -> 1, 0, 1
-  ;;
-
   module I = struct
     type 'a t =
       { clocking : 'a Types.Clocking.t
       ; request_interrupt : 'a
-      ; rd_from_mem : 'a Memory.Iface.Read_block.From_mem.t list [@length cache_rds]
-      ; wt_from_mem : 'a Memory.Iface.Write_through.From_mem.t list [@length cache_wts]
-      ; wb_from_mem : 'a Memory.Iface.Write_back.From_mem.t list [@length cache_wbs]
+      ; from_mem : 'a Memory.Bus.From_mem.t
       }
     [@@deriving hardcaml]
   end
 
   module O = struct
     type 'a t =
-      { rd_to_mem : 'a Memory.Iface.Read_block.To_mem.t list [@length cache_rds]
-      ; wt_to_mem : 'a Memory.Iface.Write_through.To_mem.t list [@length cache_wts]
-      ; wb_to_mem : 'a Memory.Iface.Write_back.To_mem.t list [@length cache_wbs]
+      { to_mem : 'a Memory.Bus.To_mem.t
       ; commit_pc : 'a With_valid.t [@bits 32]
       }
     [@@deriving hardcaml]
   end
 
-  let create
-    scope
-    ({ clocking; request_interrupt; rd_from_mem; wt_from_mem; wb_from_mem } : _ I.t)
-    =
+  let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) =
     (* Exercise translation stalls through both L1 caches until real page-table
        translation is implemented. *)
     let mmu_state =
@@ -75,96 +60,105 @@ module Make (Config : Config) = struct
         }
     in
     (* Instantiate L1 I-cache. *)
-    let%hw.Memory.Iface.Read_block.From_mem.Of_signal l1i_read_from_mem =
-      Memory.Iface.Read_block.From_mem.Of_signal.wires ()
+    let%hw.Memory.Bus.From_mem.Of_signal l1i_cache_from_mem =
+      Memory.Bus.From_mem.Of_signal.wires ()
+    in
+    let%hw.Memory.Bus.From_mem.Of_signal l1i_walker_from_mem =
+      Memory.Bus.From_mem.Of_signal.wires ()
     in
     let%hw.Memory.L1i_cache.O.Of_signal l1i =
       Memory.L1i_cache.hierarchical
         ~scope
         { clocking
         ; mmu_state
-        ; read_from_mem = l1i_read_from_mem
+        ; cache_from_mem = l1i_cache_from_mem
         ; from_pipeline = core.to_l1i
-        ; walker_from_mem =
-            Memory.Iface.Read_word.From_mem.Of_signal.zero
-              () (* TODO: hook up to memory *)
+        ; walker_from_mem = l1i_walker_from_mem
         }
     in
     Memory.L1i_cache.To_pipe.Of_signal.assign core_from_l1i l1i.to_pipeline;
     (* Instantiate L1 D-cache. *)
-    let%hw.Memory.Iface.Read_block.From_mem.Of_signal l1d_read_from_mem =
-      Memory.Iface.Read_block.From_mem.Of_signal.wires ()
+    let%hw.Memory.Bus.From_mem.Of_signal l1d_cache_from_mem =
+      Memory.Bus.From_mem.Of_signal.wires ()
     in
-    let%hw.Memory.Iface.Write_through.From_mem.Of_signal l1d_write_from_mem =
-      Memory.Iface.Write_through.From_mem.Of_signal.wires ()
+    let%hw.Memory.Bus.From_mem.Of_signal l1d_walker_from_mem =
+      Memory.Bus.From_mem.Of_signal.wires ()
     in
     let%hw.Memory.L1d_cache.O.Of_signal l1d =
       Memory.L1d_cache.hierarchical
         ~scope
         { clocking
         ; mmu_state
-        ; read_from_mem = l1d_read_from_mem
-        ; write_from_mem = l1d_write_from_mem
+        ; cache_from_mem = l1d_cache_from_mem
+        ; walker_from_mem = l1d_walker_from_mem
         ; from_pipeline = core.to_l1d
-        ; walker_from_mem =
-            Memory.Iface.Read_word.From_mem.Of_signal.zero
-              () (* TODO: hook up to memory *)
         }
     in
     Memory.L1d_cache.To_pipe.Of_signal.assign core_from_l1d l1d.to_pipeline;
     (* Instantiate L2 cache if necessary, or otherwise connect L1s to memory I/O. *)
     match Config.caches with
     | L1s ->
-      List.iter2_exn
-        [ l1i_read_from_mem; l1d_read_from_mem ]
-        rd_from_mem
-        ~f:Memory.Iface.Read_block.From_mem.Of_signal.assign;
-      Memory.Iface.Write_through.From_mem.Of_signal.assign
-        l1d_write_from_mem
-        (List.hd_exn wt_from_mem);
-      ({ rd_to_mem = [ l1i.read_to_mem; l1d.read_to_mem ]
-       ; wt_to_mem = [ l1d.write_to_mem ]
-       ; wb_to_mem = []
-       ; commit_pc = core.commit_pc
-       }
-       : _ O.t)
-    | L2 ->
-      (* Create arbiter for multiple L1 reads. *)
-      let%hw.Memory.Iface.Read_block.From_mem.Of_signal l2_read_to_arb =
-        Memory.Iface.Read_block.From_mem.Of_signal.wires ()
-      in
-      let read_to_l2, reads_from_l2 =
-        Memory.Arbiters.arb_rd
+      let to_mem, responses =
+        Memory.Arbiters.hierarchical
           ~scope
           ~clocking
-          ~reqs:[ l1i.read_to_mem; l1d.read_to_mem ]
-          ~resp:l2_read_to_arb
+          ~reqs:
+            [ l1i.cache_to_mem; l1i.walker_to_mem; l1d.cache_to_mem; l1d.walker_to_mem ]
+          ~resp:from_mem
       in
-      List.iter2_exn
-        [ l1i_read_from_mem; l1d_read_from_mem ]
-        reads_from_l2
-        ~f:Memory.Iface.Read_block.From_mem.Of_signal.assign;
-      (* Instantiate L2. *)
+      let l1i_cache, l1i_walker, l1d_cache, l1d_walker =
+        match responses with
+        | [ l1i_cache; l1i_walker; l1d_cache; l1d_walker ] ->
+          l1i_cache, l1i_walker, l1d_cache, l1d_walker
+        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+      in
+      Memory.Bus.From_mem.Of_signal.assign l1i_cache_from_mem l1i_cache;
+      Memory.Bus.From_mem.Of_signal.assign l1i_walker_from_mem l1i_walker;
+      Memory.Bus.From_mem.Of_signal.assign l1d_cache_from_mem l1d_cache;
+      Memory.Bus.From_mem.Of_signal.assign l1d_walker_from_mem l1d_walker;
+      ({ to_mem; commit_pc = core.commit_pc } : _ O.t)
+    | L2 ->
+      let%hw.Memory.Bus.From_mem.Of_signal l2_to_l1 =
+        Memory.Bus.From_mem.Of_signal.wires ()
+      in
+      let l2_from_l1, cache_responses =
+        Memory.Arbiters.hierarchical
+          ~scope
+          ~clocking
+          ~reqs:[ l1i.cache_to_mem; l1d.cache_to_mem ]
+          ~resp:l2_to_l1
+      in
+      let l1i_cache, l1d_cache =
+        match cache_responses with
+        | [ l1i; l1d ] -> l1i, l1d
+        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+      in
+      Memory.Bus.From_mem.Of_signal.assign l1i_cache_from_mem l1i_cache;
+      Memory.Bus.From_mem.Of_signal.assign l1d_cache_from_mem l1d_cache;
+      let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
+        Memory.Bus.From_mem.Of_signal.wires ()
+      in
       let%hw.Memory.L2_cache.O.Of_signal l2 =
         Memory.L2_cache.hierarchical
           ~scope
-          { clocking
-          ; read_from_l1 = read_to_l2
-          ; write_from_l1 = l1d.write_to_mem
-          ; read_from_mem = List.hd_exn rd_from_mem
-          ; write_from_mem = List.hd_exn wb_from_mem
-          }
+          { clocking; from_l1 = l2_from_l1; from_mem = l2_from_mem }
       in
-      Memory.Iface.Read_block.From_mem.Of_signal.assign l2_read_to_arb l2.read_to_l1;
-      (* Writes connect directly. *)
-      Memory.Iface.Write_through.From_mem.Of_signal.assign
-        l1d_write_from_mem
-        l2.write_to_l1;
-      ({ rd_to_mem = [ l2.read_to_mem ]
-       ; wt_to_mem = []
-       ; wb_to_mem = [ l2.write_to_mem ]
-       ; commit_pc = core.commit_pc
-       }
-       : _ O.t)
+      Memory.Bus.From_mem.Of_signal.assign l2_to_l1 l2.to_l1;
+      let to_mem, memory_responses =
+        Memory.Arbiters.hierarchical
+          ~scope
+          ~clocking
+          ~reqs:[ l2.to_mem; l1i.walker_to_mem; l1d.walker_to_mem ]
+          ~resp:from_mem
+      in
+      let l2_response, l1i_walker, l1d_walker =
+        match memory_responses with
+        | [ l2; l1i; l1d ] -> l2, l1i, l1d
+        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+      in
+      Memory.Bus.From_mem.Of_signal.assign l2_from_mem l2_response;
+      Memory.Bus.From_mem.Of_signal.assign l1i_walker_from_mem l1i_walker;
+      Memory.Bus.From_mem.Of_signal.assign l1d_walker_from_mem l1d_walker;
+      ({ to_mem; commit_pc = core.commit_pc } : _ O.t)
   ;;
 end

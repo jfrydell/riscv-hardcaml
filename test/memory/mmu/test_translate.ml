@@ -4,23 +4,26 @@ module Dut = Mmu.Translate
 open Hardcaml_test_harness.Step_harness.Functional.Make_monadic (Dut.I) (Dut.O)
 
 module Page_table_memory = struct
-  module I = Mmu.Iface.Read_word.From_mem
-  module O = Mmu.Iface.Read_word.To_mem
+  module I = Memory.Bus.From_mem
+  module O = Memory.Bus.To_mem
   module Step = Hardcaml_step_testbench.Monadic.Functional.Cyclesim.Make (I) (O)
 
   let handle ~page_table ~delay_cycles () =
     let rec loop ?(inputs = I.Of_bits.zero ()) () =
       let%bind.Step outs = Step.cycle inputs in
-      if Bits.to_bool outs.before_edge.load
+      if Bits.to_bool outs.before_edge.valid
+         && Bits.to_bool outs.before_edge.access_type.read_word
       then (
         let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
         let addr = Bits.to_int_trunc outs.before_edge.addr in
         let data = page_table addr in
         loop
           ~inputs:
-            { data
+            { data = Bits.uresize data ~width:Memory.Bus.cpu_bus_width
             ; addr = Bits.of_int_trunc ~width:Mmu.Iface.addr_width addr
             ; valid = Bits.vdd
+            ; last = Bits.vdd
+            ; ready = Bits.vdd
             }
           ())
       else loop ()

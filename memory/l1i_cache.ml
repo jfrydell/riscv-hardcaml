@@ -2,9 +2,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Iface.addr_width
-let bus_width = Iface.cpu_bus_width
-let block_size_bits = Iface.block_size_bits
+let addr_width = Memory_bus.Bus.addr_width
+let bus_width = Memory_bus.Bus.cpu_bus_width
+let block_size_bits = Memory_bus.Bus.block_size_bits
 
 (* Match the current L1 D-cache geometry. *)
 let num_sets = 512
@@ -45,8 +45,8 @@ module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
     ; mmu_state : 'a Mmu.State.t
-    ; read_from_mem : 'a Iface.Read_block.From_mem.t
-    ; walker_from_mem : 'a Iface.Read_word.From_mem.t
+    ; cache_from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; walker_from_mem : 'a Memory_bus.Bus.From_mem.t
     ; from_pipeline : 'a From_pipe.t
     }
   [@@deriving hardcaml]
@@ -54,8 +54,8 @@ end
 
 module O = struct
   type 'a t =
-    { read_to_mem : 'a Iface.Read_block.To_mem.t
-    ; walker_to_mem : 'a Iface.Read_word.To_mem.t
+    { cache_to_mem : 'a Memory_bus.Bus.To_mem.t
+    ; walker_to_mem : 'a Memory_bus.Bus.To_mem.t
     ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
@@ -71,7 +71,7 @@ end
 
 let create
   scope
-  ({ clocking; mmu_state; from_pipeline = { pc }; read_from_mem; walker_from_mem } :
+  ({ clocking; mmu_state; from_pipeline = { pc }; cache_from_mem; walker_from_mem } :
     _ I.t)
   =
   (* Stall = waiting for translation or fill, miss = translation done but waiting for fill. *)
@@ -130,9 +130,9 @@ let create
       ~size:num_words
       ~write_ports:
         [| { write_clock = clocking.clock
-           ; write_enable = read_from_mem.valid
-           ; write_address = extract_word read_from_mem.addr
-           ; write_data = read_from_mem.data
+           ; write_enable = cache_from_mem.valid
+           ; write_address = extract_word cache_from_mem.addr
+           ; write_data = cache_from_mem.data
            }
         |]
       ~read_ports:
@@ -147,8 +147,15 @@ let create
   let%hw loaded_word = data_mem.(0) in
   let%hw word_offset = sel_bottom ~width:bits_word_offset active_pa in
   let%hw insn_value = insn_from_word ~word:loaded_word ~word_offset in
-  update_tag <-- (miss &&: read_from_mem.valid &&: read_from_mem.last);
-  ({ read_to_mem = { addr = active_pa; load = miss &&: ~:update_tag }
+  update_tag <-- (miss &&: cache_from_mem.valid &&: cache_from_mem.last);
+  ({ cache_to_mem =
+       { valid = miss &&: ~:update_tag
+       ; access_type = Memory_bus.Bus.Access_type.read_block
+       ; addr = active_pa
+       ; data = zero bus_width
+       ; store_size = zero 2
+       ; last = gnd
+       }
    ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }
    ; walker_to_mem = translation.walker_to_mem
    }

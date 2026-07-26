@@ -25,7 +25,7 @@ module I = struct
         is ignored until [pa.valid] goes high (but a request arriving the cycle [pa.valid]
         is high will be processed). *)
     ; access_type : 'a Access_type.t
-    ; walker_from_mem : 'a Iface.Read_word.From_mem.t
+    ; walker_from_mem : 'a Memory_bus.Bus.From_mem.t
     (** Response from memory to page table walker. *)
     }
   [@@deriving hardcaml]
@@ -36,7 +36,7 @@ module O = struct
     { result : 'a Iface.Translation.t
     (** A translated address. Held until the cycle after a new request comes in on
         [va.valid]. *)
-    ; walker_to_mem : 'a Iface.Read_word.To_mem.t
+    ; walker_to_mem : 'a Memory_bus.Bus.To_mem.t
     (** Request from PT walker to read PTE. *)
     }
   [@@deriving hardcaml]

@@ -27,7 +27,7 @@ let find_l2_cache_state sim =
 
 let write_word_to_memory ~memory ~addr bits =
   let data = Bits.to_int64_trunc bits in
-  for byte = 0 to (Memory.Iface.cpu_bus_width / 8) - 1 do
+  for byte = 0 to (Memory.Bus.cpu_bus_width / 8) - 1 do
     let shift = 8 * byte in
     let value = Int64.(to_int_exn ((data lsr shift) land 0xffL)) in
     Hashtbl.set memory ~key:Int32.(addr + of_int_exn byte) ~data:value
@@ -117,16 +117,15 @@ let create
     block. *)
 let process_read_request
   ~memory
-  ~(request : _ Memory.Iface.Read_block.To_mem.t)
-  ~(response : _ Memory.Iface.Read_block.From_mem.t)
+  ~(request : _ Memory.Bus.To_mem.t)
+  ~(response : _ Memory.Bus.From_mem.t)
   ~(fill_addr : int32 option ref)
   =
-  let word_incr = Memory.Iface.cpu_bus_width / 8 |> Int32.of_int_exn in
+  let word_incr = Memory.Bus.cpu_bus_width / 8 |> Int32.of_int_exn in
   let block_mask =
-    (Memory.Iface.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
+    (Memory.Bus.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
   in
-  response.valid := Bits.gnd;
-  if Bits.to_bool !(request.load)
+  if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.read_block)
   then (
     let request_addr = Bits.to_int32_trunc !(request.addr) in
     match !fill_addr with
@@ -135,9 +134,10 @@ let process_read_request
       fill_addr := Some Int32.(request_addr land block_mask)
     | Some addr ->
       let last = Int32.(block_mask land addr <> block_mask land (addr + word_incr)) in
-      response.addr := Bits.of_int32_trunc ~width:Memory.Iface.addr_width addr;
+      response.addr := Bits.of_int32_trunc ~width:Memory.Bus.addr_width addr;
       response.valid := Bits.vdd;
       response.last := Bits.of_bool last;
+      response.ready := Bits.of_bool last;
       (response.data
        := let load_byte addr =
             Hashtbl.find memory addr
@@ -145,7 +145,7 @@ let process_read_request
             |> Bits.of_int_trunc ~width:8
           in
           let bytes =
-            List.init (Memory.Iface.cpu_bus_width / 8) ~f:(fun n ->
+            List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
               load_byte Int32.(addr + of_int_exn n))
           in
           Bits.concat_lsb bytes);
@@ -154,13 +154,13 @@ let process_read_request
 
 let process_writeback_request
   ~memory
-  ~(request : _ Memory.Iface.Write_back.To_mem.t)
-  ~(response : _ Memory.Iface.Write_back.From_mem.t)
+  ~(request : _ Memory.Bus.To_mem.t)
+  ~(response : _ Memory.Bus.From_mem.t)
   ~(stall_counter : int ref)
   =
-  response.ready := Bits.vdd;
-  if Bits.to_bool !(request.write)
+  if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.write_back)
   then (
+    response.ready := Bits.vdd;
     Int.decr stall_counter;
     if !stall_counter = 0
     then (
@@ -173,21 +173,67 @@ let process_writeback_request
         !(request.data))
 ;;
 
+let process_read_word_request
+  ~memory
+  ~(request : _ Memory.Bus.To_mem.t)
+  ~(response : _ Memory.Bus.From_mem.t)
+  =
+  if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.read_word)
+  then (
+    let addr = Bits.to_int32_trunc !(request.addr) in
+    response.addr := !(request.addr);
+    response.data
+    := List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
+         Hashtbl.find memory Int32.(addr + of_int_exn n)
+         |> Option.value ~default:0
+         |> Bits.of_int_trunc ~width:8)
+       |> Bits.concat_lsb;
+    response.valid := Bits.vdd;
+    response.last := Bits.vdd;
+    response.ready := Bits.vdd)
+;;
+
+let process_write_through_request
+  ~memory
+  ~(request : _ Memory.Bus.To_mem.t)
+  ~(response : _ Memory.Bus.From_mem.t)
+  =
+  if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.write_through)
+  then (
+    let size = Bits.to_int_trunc !(request.store_size) in
+    let num_bytes =
+      match size with
+      | 0 | 1 | 2 -> 1 lsl size
+      | _ -> raise_s [%message "unsupported write-through size" (size : int)]
+    in
+    let addr = Bits.to_int32_trunc !(request.addr) in
+    let data = Bits.to_int64_trunc !(request.data) in
+    for byte = 0 to num_bytes - 1 do
+      let shift = 8 * byte in
+      let value = Int64.(to_int_exn ((data lsr shift) land 0xffL)) in
+      Hashtbl.set memory ~key:Int32.(addr + of_int_exn byte) ~data:value
+    done;
+    response.ready := Bits.vdd)
+;;
+
 (* Processes CPU outputs, updating memory and feeding in responses.
 Should be called before a `Cyclesim.cycle`. *)
 let cycle_external { sim; backing_memory; fill_addr; writeback_stall_counter; _ } =
   let inputs = Cyclesim.inputs sim
   and outputs = Cyclesim.outputs sim in
+  let request = outputs.to_mem in
+  let response = inputs.from_mem in
+  response.valid := Bits.gnd;
+  response.last := Bits.gnd;
+  response.ready := Bits.gnd;
   process_writeback_request
     ~memory:backing_memory
-    ~request:(List.hd_exn outputs.wb_to_mem)
-    ~response:(List.hd_exn inputs.wb_from_mem)
+    ~request
+    ~response
     ~stall_counter:writeback_stall_counter;
-  process_read_request
-    ~memory:backing_memory
-    ~request:(List.hd_exn outputs.rd_to_mem)
-    ~response:(List.hd_exn inputs.rd_from_mem)
-    ~fill_addr
+  process_read_request ~memory:backing_memory ~request ~response ~fill_addr;
+  process_read_word_request ~memory:backing_memory ~request ~response;
+  process_write_through_request ~memory:backing_memory ~request ~response
 ;;
 
 (** Runs simulation until the next instruction commits, throwing an exception if this

@@ -2,9 +2,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Iface.addr_width
-let bus_width = Iface.cpu_bus_width
-let block_size_bits = Iface.block_size_bits
+let addr_width = Memory_bus.Bus.addr_width
+let bus_width = Memory_bus.Bus.cpu_bus_width
+let block_size_bits = Memory_bus.Bus.block_size_bits
 
 (* Match the current L1 geometry until a separate L2 geometry is specified. *)
 let num_sets = 512
@@ -49,23 +49,59 @@ module Active_access = struct
   [@@deriving hardcaml]
 end
 
+(** Info for a store to write to the cache, tracked separately to occur one cycle after it
+    is the [Active_access]. *)
+module Writing_store = struct
+  module Byte_valid = With_valid.Vector (struct
+      let width = 8
+    end)
+
+  type 'a t =
+    { addr : 'a [@bits addr_width]
+    ; bytes : 'a Byte_valid.t list [@length bus_width / 8]
+    ; valid : 'a (** Signals that the write should be performed to memory. *)
+    }
+  [@@deriving hardcaml]
+
+  let of_active ~valid (active : _ Active_access.t) =
+    let word_offset = sel_bottom ~width:(address_bits_for (bus_width / 8)) active.addr in
+    let rep_data ~width =
+      List.init (bus_width / width) ~f:(fun _ -> sel_bottom ~width active.store_data)
+      |> concat_lsb
+    in
+    let data =
+      mux active.store_size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
+      |> split_lsb ~part_width:8
+    in
+    let valids =
+      [ "0001"; "0011"; "1111" ]
+      |> List.map ~f:of_bit_string
+      |> mux active.store_size
+      |> uresize ~width:(bus_width / 8)
+      |> log_shift ~f:sll ~by:word_offset
+      |> split_lsb ~part_width:1
+    in
+    { addr = active.addr
+    ; bytes =
+        List.map2_exn data valids ~f:(fun value valid -> { With_valid.value; valid })
+    ; valid
+    }
+  ;;
+end
+
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; write_from_l1 : 'a Iface.Write_through.To_mem.t
-    ; read_from_l1 : 'a Iface.Read_block.To_mem.t
-    ; write_from_mem : 'a Iface.Write_back.From_mem.t
-    ; read_from_mem : 'a Iface.Read_block.From_mem.t
+    ; from_l1 : 'a Memory_bus.Bus.To_mem.t
+    ; from_mem : 'a Memory_bus.Bus.From_mem.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { write_to_l1 : 'a Iface.Write_through.From_mem.t
-    ; read_to_l1 : 'a Iface.Read_block.From_mem.t
-    ; write_to_mem : 'a Iface.Write_back.To_mem.t
-    ; read_to_mem : 'a Iface.Read_block.To_mem.t
+    { to_l1 : 'a Memory_bus.Bus.From_mem.t
+    ; to_mem : 'a Memory_bus.Bus.To_mem.t
     }
   [@@deriving hardcaml]
 end
@@ -98,7 +134,7 @@ module Writeback = struct
   module O = struct
     type 'a t =
       { read_addr : 'a [@bits addr_width]
-      ; to_mem : 'a Iface.Write_back.To_mem.t
+      ; to_mem : 'a Memory_bus.Bus.To_mem.t
       }
     [@@deriving hardcaml]
   end
@@ -117,9 +153,11 @@ module Writeback = struct
     ({ read_addr = base_addr +: word_offset_addr read_word_number
      ; to_mem =
          (* All these outputs go one cycle after read. *)
-         { data = data_in
+         { valid = dirty_in &: active
+         ; access_type = Memory_bus.Bus.Access_type.write_back
          ; addr = Types.Clocking.reg clocking read_addr
-         ; write = dirty_in &: active
+         ; data = data_in
+         ; store_size = zero 2
          ; last = active &&: outputting_last
          }
      }
@@ -150,7 +188,7 @@ module Read_stream = struct
   module O = struct
     type 'a t =
       { read_addr : 'a [@bits addr_width]
-      ; to_l1 : 'a Iface.Read_block.From_mem.t
+      ; to_l1 : 'a Memory_bus.Bus.From_mem.t
       }
     [@@deriving hardcaml]
   end
@@ -171,12 +209,15 @@ module Read_stream = struct
     in
     reading_last <-- (read_word_number ==: ones bits_word_in_block);
     let%hw read_addr = base_addr +: word_offset_addr read_word_number in
+    let%hw valid = Types.Clocking.reg clocking do_read in
+    let%hw last = Types.Clocking.reg clocking reading_last in
     ({ read_addr
      ; to_l1 =
-         { data = data_in
+         { valid
          ; addr = Types.Clocking.reg clocking read_addr
-         ; valid = Types.Clocking.reg clocking do_read
-         ; last = Types.Clocking.reg clocking reading_last
+         ; data = data_in
+         ; last
+         ; ready = last
          }
      }
      : _ O.t)
@@ -188,22 +229,18 @@ module Read_stream = struct
   ;;
 end
 
-let create
-  scope
-  ({ clocking; write_from_l1; read_from_l1; write_from_mem; read_from_mem } : _ I.t)
-  =
+let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
   let%hw access_done = wire 1 in
-  let read_req = read_from_l1.load in
-  let write_req = write_from_l1.store in
-  let addr = mux2 read_req read_from_l1.addr write_from_l1.addr in
-  let valid = read_req ||: write_req in
+  let read_req = from_l1.valid &&: from_l1.access_type.read_block in
+  let write_req = from_l1.valid &&: from_l1.access_type.write_through in
+  let addr = from_l1.addr in
   let incoming_access =
-    { Active_access.valid
+    { Active_access.valid = from_l1.valid
     ; addr
     ; load = read_req
     ; store = ~:read_req &: write_req
-    ; store_data = write_from_l1.store_data
-    ; store_size = write_from_l1.store_size
+    ; store_data = sel_bottom ~width:addr_width from_l1.data
+    ; store_size = from_l1.store_size
     ; tag = extract_tag addr
     ; index = extract_index addr
     ; base_addr = block_base_addr addr
@@ -211,6 +248,7 @@ let create
   in
   let%hw.Active_access.Of_signal active_access = Active_access.Of_signal.wires () in
   let active_valid = active_access.valid in
+  (* We raise [ready] on [access_done], so we should take new data then. *)
   let%hw take_incoming = ~:active_valid ||: access_done in
   let%hw.Active_access.Of_signal next_access =
     Active_access.Of_signal.mux2 take_incoming incoming_access active_access
@@ -221,6 +259,9 @@ let create
   let%hw.Metadata.Of_signal read_metadata = Metadata.Of_signal.wires () in
   let%hw tag_match = read_metadata.valid &&: (read_metadata.tag ==: active_access.tag) in
   let%hw request_valid = active_valid &&: (active_access.load ||: active_access.store) in
+  let%hw unsupported_access =
+    active_valid &&: ~:(active_access.load) &&: ~:(active_access.store)
+  in
   (* If another block is there, do writeback; if/when empty, fill from mem; when done filling, stream block out or perform store. *)
   let%hw writing_back = request_valid &&: read_metadata.valid &&: ~:tag_match in
   let%hw filling = request_valid &&: ~:(read_metadata.valid) in
@@ -246,12 +287,12 @@ let create
       ; base_addr = eviction_base_addr
       ; data_in = loaded_word
       ; dirty_in = loaded_dirty
-      ; ready = write_from_mem.ready
+      ; ready = from_mem.ready
       }
   in
-  writeback_done <-- (writeback.to_mem.last &&: write_from_mem.ready);
-  (* Fill just forwards data from [read_from_mem] to data mem. *)
-  let%hw fill_done = read_from_mem.valid &&: read_from_mem.last in
+  writeback_done <-- (writeback.to_mem.last &&: (from_mem.ready ||: ~:loaded_dirty));
+  (* Fill just forwards data from [from_mem] to data mem. *)
+  let%hw fill_done = from_mem.valid &&: from_mem.last in
   (* Stream block to L1 on load hit. *)
   let read_stream =
     Read_stream.hierarchical
@@ -262,30 +303,19 @@ let create
       ; data_in = loaded_word
       }
   in
-  (* Store hit first reads word, then overwrites with updated data/dirty. We
-     can have new [active_access] while doing update, though, as updates never
-     happen on the first cycle of access (haven't read data from memory yet).
-     So we can accept a store every cycle if they all hit. Essentially is a
-     3-stage pipeline: tag lookup, then read from data memory (or stall for
-     miss), then do update. Because update will always occur the cycle after
-     [store_hit], we can accept new access on that cycle, even though data
-     won't be written until the end of the following cycle. *)
+  (* For stores, once the block is in the cache, we first read the word, then overwrite with updated data/dirty. We raise [access_done] as we read the word, though, so that we can perform stores at line rate if they all hit. Effectively, we have a 3-stage pipeline: read tag (based on incoming access), read data (or stall for miss), then write updated data. Note that we can't have a write conflict, as we never write data (including to fill on a miss) the first cycle we have an [active_access].
+
+       Because we accept a new access during the read portion of the update, we must register the store data update. *)
+  let%hw.Writing_store.Of_signal writing_store =
+    Writing_store.(
+      of_active active_access ~valid:store_hit |> map ~f:(Types.Clocking.reg clocking))
+  in
   let%hw updated_word =
-    let original = split_lsb ~part_width:8 ~exact:true loaded_word in
-    let overwrite_bytes =
-      Iface.Write_through.to_bytes
-        { addr = active_access.addr
-        ; store = active_access.store
-        ; store_data = active_access.store_data
-        ; store_size = active_access.store_size
-        }
-      |> List.map ~f:(With_valid.map ~f:(Types.Clocking.reg clocking))
-    in
-    List.map2_exn overwrite_bytes original ~f:(fun { valid; value } byte ->
+    split_lsb ~part_width:8 ~exact:true loaded_word
+    |> List.map2_exn writing_store.bytes ~f:(fun { valid; value } byte ->
       mux2 valid value byte)
     |> concat_lsb
   in
-  let%hw store_write = Types.Clocking.reg clocking store_hit in
   (* Read data based on status of active access. *)
   let%hw data_read_addr =
     mux2 writing_back writeback.read_addr
@@ -293,16 +323,11 @@ let create
     @@ (* Store hit *)
     active_access.addr
   in
-  access_done <-- (store_hit ||: read_stream.to_l1.last);
-  (* Write data for cahce line fill or store. *)
-  let%hw data_write_enable = read_from_mem.valid ||: store_write in
-  let%hw data_write_addr =
-    mux2
-      read_from_mem.valid
-      read_from_mem.addr
-      (Types.Clocking.reg clocking active_access.addr)
-  in
-  let%hw data_write_value = mux2 store_write updated_word read_from_mem.data in
+  access_done <-- (store_hit ||: read_stream.to_l1.last ||: unsupported_access);
+  (* Write data for cache line fill or store. *)
+  let%hw data_write_enable = from_mem.valid ||: writing_store.valid in
+  let%hw data_write_addr = mux2 from_mem.valid from_mem.addr writing_store.addr in
+  let%hw data_write_value = mux2 from_mem.valid from_mem.data updated_word in
   (* Update tag/valid when we finish bringing in new block or evicting old. *)
   (* TODO: since data mem is Write_before_read (for store followed immediately by load), we're wasting a cycle here not reading data until the cycle after [fill_done], when tag is updated. *)
   (* TODO: i suppose same is true for writeback_done. once mem is accepting last beat, can move on to something else. *)
@@ -359,7 +384,7 @@ let create
         [| { write_clock = clocking.clock
            ; write_enable = data_write_enable
            ; write_address = extract_word data_write_addr
-           ; write_data = store_write
+           ; write_data = writing_store.valid
            }
         |]
       ~read_ports:
@@ -373,20 +398,24 @@ let create
   in
   loaded_word <-- data_mem.(0);
   loaded_dirty <-- dirty_mem.(0);
-  ({ write_to_l1 =
-       { (* This && is an ugly hack around the fact that we only have one ready bit, but expose two separate interfaces. Don't want to say we're accepting a store when we're actually accepting a load. *)
-         store_ready = take_incoming &&: next_access.store
-       }
-   ; read_to_l1 = read_stream.to_l1
-   ; write_to_mem = writeback.to_mem
-   ; read_to_mem =
-       { addr = active_access.addr
-       ; load =
-           filling &&: ~:fill_done
-           (* TODO: probably urn off as soon as first byte gets back? or separate ready? *)
-       }
-   }
-   : _ O.t)
+  let%hw.Memory_bus.Bus.To_mem.Of_signal read_to_mem =
+    { valid =
+        filling &&: ~:fill_done
+        (* TODO: probably urn off as soon as first byte gets back? or separate ready? *)
+    ; access_type = Memory_bus.Bus.Access_type.read_block
+    ; addr = active_access.addr
+    ; data = zero bus_width
+    ; store_size = zero 2
+    ; last = gnd
+    }
+  in
+  let%hw.Memory_bus.Bus.To_mem.Of_signal to_mem =
+    Memory_bus.Bus.To_mem.Of_signal.mux2 writing_back writeback.to_mem read_to_mem
+  in
+  let%hw.Memory_bus.Bus.From_mem.Of_signal to_l1 =
+    { read_stream.to_l1 with ready = take_incoming }
+  in
+  ({ to_l1; to_mem } : _ O.t)
 ;;
 
 let hierarchical =

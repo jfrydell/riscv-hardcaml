@@ -5,55 +5,35 @@ module Dut = struct
   module I = struct
     type 'a t =
       { clocking : 'a Types.Clocking.t
-      ; write_from_l1 : 'a Memory.Iface.Write_through.To_mem.t
-      ; read0_from_l1 : 'a Memory.Iface.Read_block.To_mem.t
-      ; read1_from_l1 : 'a Memory.Iface.Read_block.To_mem.t
-      ; write_from_mem : 'a Memory.Iface.Write_through.From_mem.t
-      ; read_from_mem : 'a Memory.Iface.Read_block.From_mem.t
+      ; request0 : 'a Memory.Bus.To_mem.t
+      ; request1 : 'a Memory.Bus.To_mem.t
+      ; request2 : 'a Memory.Bus.To_mem.t
+      ; from_mem : 'a Memory.Bus.From_mem.t
       }
     [@@deriving hardcaml]
   end
 
   module O = struct
     type 'a t =
-      { write_to_l1 : 'a Memory.Iface.Write_through.From_mem.t
-      ; read0_to_l1 : 'a Memory.Iface.Read_block.From_mem.t
-      ; read1_to_l1 : 'a Memory.Iface.Read_block.From_mem.t
-      ; write_to_mem : 'a Memory.Iface.Write_through.To_mem.t
-      ; read_to_mem : 'a Memory.Iface.Read_block.To_mem.t
+      { response0 : 'a Memory.Bus.From_mem.t
+      ; response1 : 'a Memory.Bus.From_mem.t
+      ; response2 : 'a Memory.Bus.From_mem.t
+      ; to_mem : 'a Memory.Bus.To_mem.t
       }
     [@@deriving hardcaml]
   end
 
-  let create
-    scope
-    ({ clocking
-     ; write_from_l1
-     ; read0_from_l1
-     ; read1_from_l1
-     ; write_from_mem
-     ; read_from_mem
-     } :
-      _ I.t)
-    =
-    let read_to_mem, read_resps =
-      Memory.Arbiters.arb_rd
+  let create scope ({ clocking; request0; request1; request2; from_mem } : _ I.t) =
+    let to_mem, responses =
+      Memory.Arbiters.hierarchical
         ~scope
         ~clocking
-        ~reqs:[ read0_from_l1; read1_from_l1 ]
-        ~resp:read_from_mem
+        ~reqs:[ request0; request1; request2 ]
+        ~resp:from_mem
     in
-    let read0_to_l1, read1_to_l1 =
-      match read_resps with
-      | [ read0_to_l1; read1_to_l1 ] -> read0_to_l1, read1_to_l1
-      | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
-    in
-    { O.write_to_l1 = write_from_mem
-    ; read0_to_l1
-    ; read1_to_l1
-    ; write_to_mem = write_from_l1
-    ; read_to_mem
-    }
+    match responses with
+    | [ response0; response1; response2 ] -> { O.response0; response1; response2; to_mem }
+    | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
   ;;
 end
 
@@ -61,90 +41,65 @@ open Hardcaml_test_harness.Step_harness.Functional.Make_monadic (Dut.I) (Dut.O)
 
 let run ?(timeout = 1000) = run ~timeout ~create:Dut.create
 
-let spawn_handlers ~mem =
-  let%bind.Step _ =
-    Handlers.Write_through.spawn
+let spawn_handler ~mem =
+  let%map.Step _ =
+    Handlers.spawn
       ~mem
       ~delay_cycles:(fun () -> 0)
       ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
-        { parent with
-          write_from_mem =
-            Handlers.Write_through.merge_inputs ~parent:parent.write_from_mem ~child
-        })
-      ~outputs:(fun (p : _ Step.O.t) -> p.write_to_mem)
+        { parent with from_mem = Handlers.merge_inputs ~parent:parent.from_mem ~child })
+      ~outputs:(fun (p : _ Step.O.t) -> p.to_mem)
   in
-  let%bind.Step _ =
-    Handlers.Read_block.spawn
-      ~mem
-      ~delay_cycles:(fun () -> 0)
-      ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
-        { parent with
-          read_from_mem =
-            Handlers.Read_block.merge_inputs ~parent:parent.read_from_mem ~child
-        })
-      ~outputs:(fun (p : _ Step.O.t) -> p.read_to_mem)
-  in
-  Step.return ()
+  ()
 ;;
 
-let spawn_write_emitter ?model_mem ~events () =
-  Emitters.Write_through.spawn
+let spawn_emitter0 ?model_mem ~events () =
+  Emitters.spawn
     ?model_mem
     ~events
     ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
-      { parent with
-        write_from_l1 =
-          Emitters.Write_through.merge_inputs ~parent:parent.write_from_l1 ~child
-      })
-    ~outputs:(fun (p : _ Step.O.t) -> p.write_to_l1)
+      { parent with request0 = Emitters.merge_inputs ~parent:parent.request0 ~child })
+    ~outputs:(fun (p : _ Step.O.t) -> p.response0)
     ()
 ;;
 
-let spawn_read0_emitter ?model_mem ~events () =
-  Emitters.Read_block.spawn
+let spawn_emitter1 ?model_mem ~events () =
+  Emitters.spawn
     ?model_mem
     ~events
     ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
-      { parent with
-        read0_from_l1 =
-          Emitters.Read_block.merge_inputs ~parent:parent.read0_from_l1 ~child
-      })
-    ~outputs:(fun (p : _ Step.O.t) -> p.read0_to_l1)
+      { parent with request1 = Emitters.merge_inputs ~parent:parent.request1 ~child })
+    ~outputs:(fun (p : _ Step.O.t) -> p.response1)
     ()
 ;;
 
-let spawn_read1_emitter ?model_mem ~events () =
-  Emitters.Read_block.spawn
+let spawn_emitter2 ?model_mem ~events () =
+  Emitters.spawn
     ?model_mem
     ~events
     ~inputs:(fun ~(parent : _ Step.I.t) ~child ->
-      { parent with
-        read1_from_l1 =
-          Emitters.Read_block.merge_inputs ~parent:parent.read1_from_l1 ~child
-      })
-    ~outputs:(fun (p : _ Step.O.t) -> p.read1_to_l1)
+      { parent with request2 = Emitters.merge_inputs ~parent:parent.request2 ~child })
+    ~outputs:(fun (p : _ Step.O.t) -> p.response2)
     ()
 ;;
 
 let with_memories ?(backing_mem = Int.Table.create ()) () =
-  let mem = Hashtbl.copy backing_mem in
-  let model_mem = Hashtbl.copy backing_mem in
-  mem, model_mem
+  Hashtbl.copy backing_mem, Hashtbl.copy backing_mem
 ;;
 
-let bits_of_hex hex = Bits.of_hex ~width:Memory.Iface.cpu_bus_width hex
+let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.cpu_bus_width hex
 
-let testbench ~mem ~model_mem ~write_events ~read0_events ~read1_events _ =
-  let%bind.Step () = spawn_handlers ~mem in
-  let%bind.Step writer = spawn_write_emitter ~model_mem ~events:write_events () in
-  let%bind.Step reader0 = spawn_read0_emitter ~model_mem ~events:read0_events () in
-  let%bind.Step reader1 = spawn_read1_emitter ~model_mem ~events:read1_events () in
-  let%bind.Step () = Step.wait_for writer in
-  let%bind.Step () = Step.wait_for reader0 in
-  Step.wait_for reader1
+let testbench ~mem ~model_mem ~events0 ~events1 ~events2 _ =
+  let%bind.Step () = spawn_handler ~mem in
+  let%bind.Step emitter0 = spawn_emitter0 ~model_mem ~events:events0 () in
+  let%bind.Step emitter1 = spawn_emitter1 ~model_mem ~events:events1 () in
+  let%bind.Step emitter2 = spawn_emitter2 ~model_mem ~events:events2 () in
+  let%bind.Step () = Step.wait_for emitter0 in
+  let%bind.Step () = Step.wait_for emitter1 in
+  Step.wait_for emitter2
 ;;
 
-let%test_unit "read arbiter routes responses to both requestors" =
+let%test_unit "arbiter routes mixed accesses and responses to every requester" =
   let mem, model_mem =
     with_memories
       ~backing_mem:
@@ -161,91 +116,72 @@ let%test_unit "read arbiter routes responses to both requestors" =
       ()
   in
   run
-  (* ~waves_config: *)
-  (*   (Hardcaml_test_harness.Waves_config.to_file "/tmp/test.hardcaml_waveform.Z" *)
-  (*    |> Hardcaml_test_harness.Waves_config.with_extra_cycles_after_test ~n:1) *)
     ~timeout:1000
     (testbench
        ~mem
        ~model_mem
-       ~write_events:
+       ~events0:
          (Sequence.of_list
-            [ Emitters.Write_through.Event.Delay 5
-            ; Emitters.Write_through.Event.Store
-                { addr = 0x10c; data = 0xfeedface; size = 2 }
+            [ Emitters.Event.Delay 5
+            ; Write_through { addr = 0x10c; data = 0xfeedface; size = 2 }
             ])
-       ~read0_events:
+       ~events1:
          (Sequence.of_list
-            [ Emitters.Read_block.Event.Read { addr = 0x100 }
-            ; Emitters.Read_block.Event.Read { addr = 0x100 }
-            ])
-       ~read1_events:
-         (Sequence.of_list
-            [ Emitters.Read_block.Event.Delay 1
-            ; Emitters.Read_block.Event.Read { addr = 0x200 }
-            ]))
+            [ Emitters.Event.Read_block { addr = 0x100 }; Read_block { addr = 0x100 } ])
+       ~events2:(Sequence.of_list [ Emitters.Event.Delay 1; Read_block { addr = 0x200 } ]))
 ;;
 
 let access_generator ~writes ~reads0 ~reads1 =
   let open Quickcheck.Generator.Let_syntax in
-  let%map write_events =
+  let%map events0 =
     Quickcheck.Generator.list_with_length
       writes
-      (Emitters.Write_through.Event.quickcheck_generator ~max_set:0)
-  and read0_events =
+      (Emitters.Event.write_through_generator ~max_set:0)
+  and events1 =
     Quickcheck.Generator.list_with_length
       reads0
-      (Emitters.Read_block.Event.quickcheck_generator ~max_set:0)
-  and read1_events =
+      (Emitters.Event.read_block_generator ~max_set:0)
+  and events2 =
     Quickcheck.Generator.list_with_length
       reads1
-      (Emitters.Read_block.Event.quickcheck_generator ~max_set:0)
+      (Emitters.Event.read_block_generator ~max_set:0)
   in
-  write_events, read0_events, read1_events
+  events0, events1, events2
 ;;
 
 let%test_unit "small random tests" =
   Quickcheck.test
     ~seed:(`Deterministic "rd-arb-small")
     ~sexp_of:
-      [%sexp_of:
-        Emitters.Write_through.Event.t list
-        * Emitters.Read_block.Event.t list
-        * Emitters.Read_block.Event.t list]
+      [%sexp_of: Emitters.Event.t list * Emitters.Event.t list * Emitters.Event.t list]
     ~trials:100
     (access_generator ~writes:5 ~reads0:5 ~reads1:5)
-    ~f:(fun (write_events, read0_events, read1_events) ->
+    ~f:(fun (events0, events1, events2) ->
       let mem, model_mem = with_memories () in
       run
-        (* ~waves_config: *)
-        (*   (Hardcaml_test_harness.Waves_config.to_file "/tmp/test.hardcaml_waveform.Z" *)
-        (*    |> Hardcaml_test_harness.Waves_config.with_extra_cycles_after_test ~n:1) *)
         (testbench
            ~mem
            ~model_mem
-           ~write_events:(Sequence.of_list write_events)
-           ~read0_events:(Sequence.of_list read0_events)
-           ~read1_events:(Sequence.of_list read1_events)))
+           ~events0:(Sequence.of_list events0)
+           ~events1:(Sequence.of_list events1)
+           ~events2:(Sequence.of_list events2)))
 ;;
 
 let%test_unit "larger random tests" =
   Quickcheck.test
     ~seed:(`Deterministic "rd-arb-large")
     ~sexp_of:
-      [%sexp_of:
-        Emitters.Write_through.Event.t list
-        * Emitters.Read_block.Event.t list
-        * Emitters.Read_block.Event.t list]
+      [%sexp_of: Emitters.Event.t list * Emitters.Event.t list * Emitters.Event.t list]
     ~trials:20
     (access_generator ~writes:250 ~reads0:250 ~reads1:250)
-    ~f:(fun (write_events, read0_events, read1_events) ->
+    ~f:(fun (events0, events1, events2) ->
       let mem, model_mem = with_memories () in
       run
         ~timeout:10_000
         (testbench
            ~mem
            ~model_mem
-           ~write_events:(Sequence.of_list write_events)
-           ~read0_events:(Sequence.of_list read0_events)
-           ~read1_events:(Sequence.of_list read1_events)))
+           ~events0:(Sequence.of_list events0)
+           ~events1:(Sequence.of_list events1)
+           ~events2:(Sequence.of_list events2)))
 ;;

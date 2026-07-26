@@ -1,0 +1,5 @@
+(library
+ (name memory_bus)
+ (libraries core hardcaml utils)
+ (preprocess
+  (pps ppx_jane ppx_hardcaml)))

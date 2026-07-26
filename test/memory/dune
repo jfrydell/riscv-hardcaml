@@ -5,6 +5,7 @@
   core
   hardcaml
   memory
+  memory_bus
   hardcaml_step_testbench
   hardcaml_test_harness)
  (preprocess
