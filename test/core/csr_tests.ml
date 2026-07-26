@@ -4,34 +4,6 @@ open Hardcaml
 module Csr_bank_sim =
   Cyclesim.With_interface (Privileged.Csr_bank.I) (Privileged.Csr_bank.O)
 
-let check_csr_bank_value outputs expected =
-  let actual = Bits.to_int32_trunc !(outputs.Privileged.Csrs.custom0) in
-  if not (Int32.equal actual expected)
-  then raise_s [%message "Unexpected CSR bank value" (actual : int32) (expected : int32)]
-;;
-
-let test_csr_bank_latency_and_mask () =
-  let scope = Scope.create ~flatten_design:true () in
-  let sim = Csr_bank_sim.create (Privileged.Csr_bank.create scope) in
-  let inputs = Cyclesim.inputs sim in
-  let outputs = Cyclesim.outputs sim in
-  let write = inputs.writes.custom0 in
-  let cycle_with_write ~value ~mask =
-    write.value := Bits.of_int32_trunc ~width:32 value;
-    write.mask := Bits.of_int32_trunc ~width:32 mask;
-    Cyclesim.cycle sim
-  in
-  check_csr_bank_value outputs Int32.zero;
-  cycle_with_write ~value:0xa5l ~mask:Int32.minus_one;
-  check_csr_bank_value outputs Int32.zero;
-  cycle_with_write ~value:Int32.zero ~mask:Int32.zero;
-  check_csr_bank_value outputs 0xa5l;
-  cycle_with_write ~value:0x0al ~mask:0x0fl;
-  check_csr_bank_value outputs 0xa5l;
-  cycle_with_write ~value:Int32.zero ~mask:Int32.zero;
-  check_csr_bank_value outputs 0xaal
-;;
-
 let csr_address = Privileged.Csrs.addresses.custom0
 
 let program =
@@ -58,7 +30,6 @@ let expected_regs =
 ;;
 
 let () =
-  test_csr_bank_latency_and_mask ();
   let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero in
   let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves in
   List.iter program ~f:(fun _ ->

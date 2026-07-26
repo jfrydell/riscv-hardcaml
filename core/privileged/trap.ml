@@ -21,8 +21,10 @@ module I = struct
     ; next_pc : 'a [@bits 32] (** PC which will execute after the instruction in M. *)
     ; exception_request : 'a (** The instruction in M has encountered an exception. *)
     ; interrupt_request : 'a (** Requests an interrupt to be triggered. *)
-    ; explicit_csr_update : 'a (** The instruction in M is an explicit CSR access. *)
-    ; explicit_csr_info : 'a Explicit_csr.I.t
+    ; explicit_csr : 'a Explicit_csr.Decode.I.t
+    (** The instruction in M is a CSR update, triggering the same trap mechanism to squash
+        later instructions, but then resuming execution at the next instruction instead of
+        at a trap handler. *)
     }
   [@@deriving hardcaml]
 end
@@ -36,48 +38,39 @@ module O = struct
     (** The instruction in M itself has encountered an exception, so it should not move on
         to W. *)
     ; handler_pc : 'a With_valid.t [@bits 32]
-    (** A new value for PC to begin executing the trap handler. Guaranteed to be set on
-        the last cycle [trap_active] is high, so the correct PC will be in place as soon
-        as execution resumes. *)
-    ; csr_writes : 'a Csr_bank.Writes.t
+    (** A new value for PC to begin executing the trap handler. Set on the last cycle
+        [trap_active] is high, so the correct PC will be in place as soon as execution
+        resumes. *)
+    ; csrs : 'a Csrs.t
     }
   [@@deriving hardcaml]
 end
 
 let create
   scope
-  ({ clocking
-   ; m_status
-   ; pc
-   ; next_pc
-   ; exception_request
-   ; interrupt_request
-   ; explicit_csr_update
-   ; explicit_csr_info
-   } :
+  ({ clocking; m_status; pc; next_pc; exception_request; interrupt_request; explicit_csr } :
     _ I.t)
   : _ O.t
   =
-  (* Traps are always raised as an instruction finishes the M stage. We can't
-     raise earlier because page faults are detected in M, but can't wait until
-     commit because stores write to the cache in M. Because both of these
-     happen in the same stage, but one requires the trap to occur before the
-     instruction is executed, and the other requires the instruction to
-     complete (since it's already written to memory) before the trap, we
-     distinguish three types of traps:
-    - Exceptions on an instruction in M don't commit that instruction, setting epc to that PC.
-    - Interrupts allow the instruction in M to proceed to W (waiting if it is stalled), and point epc to the following instruction.
-    - Explicit CSR updates also allow the instruction to proceed to W, and resume at the
-      following instruction once the CSR bank has applied the update. *)
   (* As long as M is not stalled (in which case we must wait for it to complete
      successfully before interrupt or complete with an exception), we can
      trigger a trap. *)
   let%hw trap_started = wire 1 in
-  let%hw trap_allowed = m_status.valid &&: ~:(m_status.stall) in
+  let%hw trap_allowed = ~:trap_started &&: m_status.valid &&: ~:(m_status.stall) in
   let%hw start_trap =
-    ~:trap_started
-    &&: trap_allowed
-    &&: (exception_request ||: interrupt_request ||: explicit_csr_update)
+    trap_allowed &&: (exception_request ||: interrupt_request ||: explicit_csr.valid)
+  in
+  (* TODO: not sure on priority if multiple occur on same cycle. CSR must come
+     before interrupt (as read will commit), but we could accept the interrupt
+     and squash_M and it would be fine. if CSR can have exception, should handle
+     exception first. other than that, doesn't matter (so if squash_M on CSR +
+     interrupt, then we could but interrupt first) *)
+  let%hw _start_exception = trap_allowed &&: exception_request in
+  let%hw start_explicit_csr_update =
+    trap_allowed &&: ~:exception_request &&: explicit_csr.valid
+  in
+  let%hw _start_interrupt =
+    trap_allowed &&: ~:(exception_request ||: explicit_csr.valid) &&: ~:interrupt_request
   in
   (* If the instruction in M has an exception, it cannot be allowed to
      complete, and our EPC is that instruction. Otherwise, it is allowed to
@@ -93,23 +86,20 @@ let create
   let%hw epc =
     Types.Clocking.reg clocking ~enable:start_trap (mux2 squash_M pc next_pc_latched)
   in
-  (* The trap is finished once the CSR update goes through. (TODO: is it at all reasonable to have this always be the same latency?) *)
-  let%hw trap_finished =
-    Types.Clocking.pipeline ~n:Csr_bank.csr_latency clocking start_trap
+  (* Update CSRs when trap begins. *)
+  let%hw.Csr_bank.O.Of_signal csr_bank =
+    Csr_bank.hierarchical
+      ~scope
+      { clocking
+      ; explicit_write = { explicit_csr with valid = start_explicit_csr_update }
+      }
   in
-  trap_started <-- Utils.sr ~set:start_trap ~reset:trap_finished clocking;
-  (* Construct CSR writes. *)
-  let explicit_csr_writes =
-    Explicit_csr.hierarchical ~scope explicit_csr_info
-    |> Csrs.map ~f:(fun write ->
-      { Csr_bank.Write.value = write.value
-      ; mask = write.mask &: repeat (start_trap &&: explicit_csr_update) ~count:32
-      })
-  in
+  (* The trap is finished once the CSR update goes through. *)
+  trap_started <-- Utils.sr ~set:start_trap ~reset:csr_bank.write_done clocking;
   ({ trap_active = start_trap ||: trap_started
    ; squash_M
-   ; handler_pc = { value = epc; valid = trap_finished }
-   ; csr_writes = explicit_csr_writes
+   ; handler_pc = { value = epc; valid = csr_bank.write_done }
+   ; csrs = csr_bank.csrs
    }
    : _ O.t)
 ;;

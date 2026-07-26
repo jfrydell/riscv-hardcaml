@@ -275,9 +275,7 @@ let create scope (i : _ I.t) =
     }
   in
   stall_memory <-- i.from_l1d.stall;
-  let%hw.Privileged.Csrs.Values.Of_signal csrs =
-    Privileged.Csrs.Values.Of_signal.wires ()
-  in
+  let%hw.Privileged.Csrs.Of_signal csrs = Privileged.Csrs.Of_signal.wires () in
   let csr_read_cases =
     Privileged.Csrs.map2 Privileged.Csrs.addresses csrs ~f:(fun address value ->
       of_int_trunc ~width:12 address, value)
@@ -320,12 +318,22 @@ let create scope (i : _ I.t) =
         (rs2 M ==: rd W &: (rs2 M <>: zero 5) -- "bypassWM2")
         (rdval W)
         (forward_pipeline ~signal:(rs2val X) ~stage:X () M);
-  (* CSR write data gets the normal W-to-M bypass for rs1. *)
+  (* CSR write data just gets value from X (could bypass load-to-use, but didn't bother). *)
   rs1val M <-- forward_pipeline ~signal:(rs1val X) ~stage:X () M;
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
   let reg_is_load_dest rs = result_in_m X &: (rs ==: rd X) &: (rs <>: zero 5) in
+  (* TODO: shouldn't stall if can bypass to store data, right? otherwise what is rs2val M bypass doing? *)
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
-  (* Trap / CSR write handling. *)
+  (* Trap / CSR write handling.
+     Traps are always raised as an instruction finishes the M stage. We can't
+     raise earlier because page faults are detected in M, but can't wait until
+     commit because stores write to the cache in M. Because both of these
+     happen in the same stage, but one requires the trap to occur before the
+     instruction is executed, and the other requires the instruction to
+     complete (since it's already written to memory) before the trap, we
+     this outputs a [trap_squash_M] signal stating when the instruction should
+     M should not proceed to writeback, and the trap logically occurs before it
+     commits (setting EPC to the instruction in M, not the one after). *)
   let%hw.Privileged.Trap.O.Of_signal trap =
     Privileged.Trap.hierarchical
       ~scope
@@ -335,17 +343,13 @@ let create scope (i : _ I.t) =
       ; next_pc = next_pc M
       ; exception_request = gnd
       ; interrupt_request = gnd
-      ; explicit_csr_update = is_csr M
-      ; explicit_csr_info = { insn = insn M; rs1 = rs1val M }
+      ; explicit_csr = { insn = insn M; rs1 = rs1val M; valid = is_csr M }
       }
   in
   trap_active <-- trap.trap_active;
   trap_squash_M <-- trap.squash_M;
   With_valid.iter2 ~f:( <-- ) trap_pc trap.handler_pc;
-  Privileged.Csrs.Values.Of_signal.assign csrs
-  @@ Privileged.Csr_bank.hierarchical
-       ~scope
-       { clocking = i.clocking; writes = trap.csr_writes };
+  Privileged.Csrs.Of_signal.assign csrs trap.csrs;
   let%hw commit_valid = is_insn W &&: ~:(stall W) in
   O.{ to_l1i; to_l1d; commit_pc = { valid = commit_valid; value = pc W } }
 ;;

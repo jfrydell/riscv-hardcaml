@@ -1,45 +1,57 @@
 open! Core
 open Hardcaml
-open Signal
 
-let csr_latency = 2
-
-module Write = struct
-  type 'a t =
-    { value : 'a [@bits 32]
-    ; mask : 'a [@bits 32]
+(** Latency configuration for CSR updates. *)
+module Latencies = struct
+  type t =
+    { explicit_decode : int
+    (** Number of cycles to add for decoding CSR instruction (address decode and routing
+        to CSRs). *)
     }
-  [@@deriving hardcaml]
 end
 
-module Writes = Csrs.Wrap (Write)
+let latencies : Latencies.t = { explicit_decode = 2 }
 
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; writes : 'a Writes.t
+    ; explicit_write : 'a Explicit_csr.Decode.I.t
+    (** Writes from CSR update instructions. *)
     }
   [@@deriving hardcaml]
 end
 
-module O = Csrs.Values
+module O = struct
+  type 'a t =
+    { csrs : 'a Csrs.t
+    ; write_done : 'a
+    }
+  [@@deriving hardcaml]
+end
 
-let create scope ({ clocking; writes } : _ I.t) =
-  let%hw.Writes.Of_signal buffered_writes =
-    Writes.map writes ~f:(Types.Clocking.pipeline ~n:csr_latency clocking)
+let create scope ({ clocking; explicit_write } : _ I.t) =
+  let spec = Types.Clocking.to_spec clocking in
+  (* Process explicit CSR writes. *)
+  let%hw.Explicit_csr.Decode.O.Of_signal decoded_explicit =
+    Explicit_csr.Decode.hierarchical ~scope explicit_write
   in
-  (* Define how each CSR is updated so as to always hold legal values. *)
-  let all_legal ~old_value:_ ~new_value = new_value in
-  let update_rules : _ Csrs.t =
-    { custom0 = all_legal; custom1 = all_legal; custom2 = all_legal; custom3 = all_legal }
+  let%hw.Explicit_csr.Decode.O.Of_signal delayed_decoded_explicit =
+    Explicit_csr.Decode.O.Of_signal.pipeline
+      ~n:latencies.explicit_decode
+      spec
+      decoded_explicit
   in
-  Csrs.map2
-    ~f:(fun update ({ value; mask } : _ Write.t) ->
-      Types.Clocking.reg_fb clocking ~width:32 ~f:(fun old_value ->
-        let new_value = old_value &: ~:mask |: (value &: mask) in
-        mux2 (mask <>:. 0) (update ~old_value ~new_value) old_value))
-    update_rules
-    buffered_writes
+  (* Apply writes. *)
+  let%hw.Csrs.Of_signal csrs = Csrs.Of_signal.wires () in
+  let%hw.Csrs.Of_signal after_explicit =
+    Explicit_csr.update ~update:delayed_decoded_explicit ~old_values:csrs
+  in
+  Csrs.Of_signal.assign csrs (Csrs.map ~f:(Types.Clocking.reg clocking) after_explicit);
+  ({ csrs
+   ; write_done =
+       Types.Clocking.pipeline ~n:latencies.explicit_decode clocking explicit_write.valid
+   }
+   : _ O.t)
 ;;
 
 let hierarchical =
