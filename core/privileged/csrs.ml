@@ -2,16 +2,25 @@ open! Core
 open Hardcaml
 
 type 'a t =
-  { mstatus : 'a [@bits 32]
-  ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
-  ; mie : 'a [@bits 32]
-  ; mtvec : 'a [@bits 32]
+  { sstatus : 'a [@bits 32] (** Restricted view of [mstatus]. *)
+  ; sie : 'a [@bits 32] (** Restricted view of [mie]. *)
+  ; stvec : 'a [@bits 32]
+  ; sscratch : 'a [@bits 32]
   ; sepc : 'a [@bits 32]
   ; scause : 'a [@bits 32]
   ; stval : 'a [@bits 32]
+  ; sip : 'a [@bits 32] (** Restricted view of [mip]. *)
+  ; mstatus : 'a [@bits 32]
+  ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
+  ; medeleg : 'a [@bits 32]
+  ; mideleg : 'a [@bits 32]
+  ; mie : 'a [@bits 32]
+  ; mtvec : 'a [@bits 32]
+  ; mscratch : 'a [@bits 32]
   ; mepc : 'a [@bits 32]
   ; mcause : 'a [@bits 32]
   ; mtval : 'a [@bits 32]
+  ; mip : 'a [@bits 32]
   ; custom0 : 'a [@bits 32]
   ; custom1 : 'a [@bits 32]
   ; custom2 : 'a [@bits 32]
@@ -22,16 +31,25 @@ type 'a t =
 [@@deriving hardcaml]
 
 let addresses =
-  { mstatus = 0x300
-  ; mstatush = 0x301
-  ; mie = 0x304
-  ; mtvec = 0x305
+  { sstatus = 0x100
+  ; sie = 0x104
+  ; stvec = 0x105
+  ; sscratch = 0x140
   ; sepc = 0x141
   ; scause = 0x142
   ; stval = 0x143
+  ; sip = 0x144
+  ; mstatus = 0x300
+  ; mstatush = 0x310
+  ; medeleg = 0x302
+  ; mideleg = 0x303
+  ; mie = 0x304
+  ; mtvec = 0x305
+  ; mscratch = 0x340
   ; mepc = 0x341
   ; mcause = 0x342
   ; mtval = 0x343
+  ; mip = 0x344
   ; custom0 = 0x7c0
   ; custom1 = 0x7c1
   ; custom2 = 0x7c2
@@ -72,6 +90,14 @@ module Mask = Wrap (Types.Value (struct
 
 (** Utilities for working with mstatus. *)
 module Mstatus = struct
+  let sstatus_mask =
+    Signal.of_int_trunc
+      ~width:32
+      ((1 lsl 1) lor (1 lsl 5) lor (1 lsl 8) lor (1 lsl 18) lor (1 lsl 19))
+  ;;
+
+  let sstatus_view register = Signal.(register &: sstatus_mask)
+
   module Fields = struct
     type 'a t =
       { sie : 'a
@@ -129,4 +155,14 @@ module Mstatus = struct
         ]
     ;;
   end
+end
+
+(** Utilities for the implemented interrupt CSRs.
+
+    Machine external interrupt is currently the only interrupt input. [sie] is a
+    restricted view of [mie], exposing only interrupts delegated to S mode. *)
+module Interrupt = struct
+  let implemented_mask = Signal.of_int_trunc ~width:32 (1 lsl 11)
+  let sie_view ~mie ~mideleg = Signal.(mie &: mideleg &: implemented_mask)
+  let sip_view ~mip ~mideleg = Signal.(mip &: mideleg &: implemented_mask)
 end

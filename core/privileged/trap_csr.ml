@@ -17,43 +17,6 @@ module Update = struct
   [@@deriving hardcaml]
 end
 
-(** Decode trap information into an [Update].
-
-    Delegation is not implemented yet, so all incoming traps target M mode. *)
-module Decode = struct
-  module I = struct
-    type 'a t =
-      { epc : 'a [@bits 32]
-      ; trap_value : 'a [@bits 32]
-      ; cause : 'a [@bits 32]
-      ; csrs : 'a Csrs.t
-      ; trap : 'a
-      ; mret : 'a
-      ; sret : 'a
-      }
-    [@@deriving hardcaml]
-  end
-
-  module O = Update
-
-  let create _scope ({ epc; trap_value; cause; csrs = _; trap; mret; sret } : _ I.t)
-    : _ O.t
-    =
-    { epc
-    ; trap_value
-    ; cause
-    ; trap
-    ; ret = mret ||: sret
-    ; higher_priv_s = mux2 trap gnd sret
-    }
-  ;;
-
-  let hierarchical =
-    let module H = Hierarchy.In_scope (I) (O) in
-    H.hierarchical create
-  ;;
-end
-
 (** Apply CSR updates for a trap or trap return. *)
 let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
   let old_mstatus = Csrs.Mstatus.Fields.of_register old_values.mstatus in
@@ -92,8 +55,9 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
   let update_enabled = update.trap ||: update.ret in
   let trap_to_s = update.trap &&: higher_priv_s in
   let trap_to_m = update.trap &&: ~:higher_priv_s in
+  let mstatus = mux2 update_enabled new_mstatus old_values.mstatus in
   { old_values with
-    mstatus = mux2 update_enabled new_mstatus old_values.mstatus
+    mstatus
   ; sepc = mux2 trap_to_s (update.epc &: ones 30 @: zero 2) old_values.sepc
   ; scause = mux2 trap_to_s update.cause old_values.scause
   ; stval = mux2 trap_to_s update.trap_value old_values.stval

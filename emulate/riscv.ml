@@ -98,14 +98,25 @@ type csr =
 [@@deriving equal, sexp, quickcheck]
 
 module Csr_address = struct
+  let sstatus = 0x100
+  let sie = 0x104
+  let stvec = 0x105
+  let sscratch = 0x140
+  let sepc = 0x141
+  let scause = 0x142
+  let stval = 0x143
+  let sip = 0x144
   let mstatus = 0x300
-  let mstatush = 0x301
+  let mstatush = 0x310
+  let medeleg = 0x302
+  let mideleg = 0x303
   let mie = 0x304
   let mtvec = 0x305
-  let sepc = 0x141
+  let mscratch = 0x340
   let mepc = 0x341
   let mcause = 0x342
   let mtval = 0x343
+  let mip = 0x344
 end
 
 type insn =
@@ -122,6 +133,7 @@ type insn =
   | Ecall
   | Ebreak
   | Mret
+  | Sret
 [@@deriving equal, sexp, quickcheck]
 
 (* Nop = addi $0, $0, 0 *)
@@ -261,6 +273,7 @@ let of_int32 insn =
       | 0 when Int32.equal insn (Int32.of_string "0x00000073") -> Ok Ecall
       | 0 when Int32.equal insn (Int32.of_string "0x00100073") -> Ok Ebreak
       | 0 when Int32.equal insn (Int32.of_string "0x30200073") -> Ok Mret
+      | 0 when Int32.equal insn (Int32.of_string "0x10200073") -> Ok Sret
       | 1 -> Ok (Csr { op = Csrrw; rd; src = Reg rs1; csr })
       | 2 -> Ok (Csr { op = Csrrs; rd; src = Reg rs1; csr })
       | 3 -> Ok (Csr { op = Csrrc; rd; src = Reg rs1; csr })
@@ -390,6 +403,7 @@ let to_int32 =
   | Ecall -> Int32.of_string "0x00000073"
   | Ebreak -> Int32.of_string "0x00100073"
   | Mret -> Int32.of_string "0x30200073"
+  | Sret -> Int32.of_string "0x10200073"
 ;;
 
 (* Test bits *)
@@ -438,7 +452,7 @@ let%test "roundtrip csrrwi" =
 ;;
 
 let%test "roundtrip system instructions" =
-  List.for_all [ Ecall; Ebreak; Mret ] ~f:roundtrip
+  List.for_all [ Ecall; Ebreak; Mret; Sret ] ~f:roundtrip
 ;;
 
 (* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31})

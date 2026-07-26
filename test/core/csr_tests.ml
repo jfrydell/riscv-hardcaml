@@ -31,6 +31,19 @@ let program =
   ; Lui { rd = 21; imm = Int32.of_int_exn 0x1000 }
   ; Csr { op = Csrrw; rd = 22; src = Reg 21; csr = addresses.mstatus }
   ; Csr { op = Csrrs; rd = 23; src = Reg 0; csr = addresses.mstatus }
+  ; IntImm (Add, { rd = 24; rs1 = 0; imm = Int32.minus_one })
+  ; Csr { op = Csrrw; rd = 25; src = Reg 24; csr = addresses.medeleg }
+  ; Csr { op = Csrrs; rd = 26; src = Reg 0; csr = addresses.medeleg }
+  ; Csr { op = Csrrw; rd = 25; src = Reg 24; csr = addresses.mideleg }
+  ; Csr { op = Csrrs; rd = 27; src = Reg 0; csr = addresses.mideleg }
+  ; Csr { op = Csrrw; rd = 25; src = Reg 0; csr = addresses.mie }
+  ; Csr { op = Csrrw; rd = 25; src = Reg 24; csr = addresses.sie }
+  ; Csr { op = Csrrs; rd = 28; src = Reg 0; csr = addresses.mie }
+  ; Csr { op = Csrrs; rd = 29; src = Reg 0; csr = addresses.sie }
+  ; IntImm (Add, { rd = 24; rs1 = 0; imm = Int32.of_int_exn 0x122 })
+  ; Csr { op = Csrrw; rd = 25; src = Reg 24; csr = addresses.sstatus }
+  ; Csr { op = Csrrs; rd = 30; src = Reg 0; csr = addresses.mstatus }
+  ; Csr { op = Csrrs; rd = 31; src = Reg 0; csr = addresses.sstatus }
   ]
 ;;
 
@@ -54,6 +67,13 @@ let expected_regs =
     ; 20, 0x104
     ; 21, 0x1000
     ; 23, 0x1800
+    ; 24, 0x122
+    ; 26, 0x30c
+    ; 27, 0x800
+    ; 28, 0x800
+    ; 29, 0x800
+    ; 30, 0x1922
+    ; 31, 0x122
     ]
     ~f:(fun (register, value) -> regs.(register) <- Int32.of_int_exn value);
   regs

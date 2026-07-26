@@ -98,3 +98,32 @@ let interrupt_handler =
   ; Mret
   ]
 ;;
+
+let supervisor_exception_handler =
+  let open Csr_address in
+  [ csrr 20 scause
+  ; csrr 21 sepc
+  ; csrr 22 stval
+  ; csrr 23 sstatus
+  ; addi ~rd:24 ~rs1:24 1
+  ; IntImm (Sll, { rd = 25; rs1 = 25; imm = int 4 })
+  ; IntReg (Add, { rd = 25; rs1 = 25; rs2 = 20 })
+  ; addi ~rd:21 ~rs1:21 4
+  ; csrw sepc 21
+  ; Sret
+  ]
+;;
+
+let supervisor_interrupt_handler =
+  let open Csr_address in
+  [ csrr 20 scause
+  ; csrr 21 sepc
+  ; csrr 22 sstatus
+  ; csrr 26 sip
+  ; addi ~rd:24 ~rs1:24 1
+  ; addi ~rd:30 ~rs1:0 1
+  ; nop
+  ; nop
+  ; Sret
+  ]
+;;

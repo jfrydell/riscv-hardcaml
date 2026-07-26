@@ -18,6 +18,7 @@ module Action = struct
     { exception_ : 'a
     ; explicit_csr : 'a
     ; mret : 'a
+    ; sret : 'a
     ; interrupt : 'a
     }
   [@@deriving hardcaml]
@@ -28,12 +29,15 @@ module Action = struct
     let exception_ = possible.exception_ in
     let explicit_csr = possible.explicit_csr &&: ~:exception_ in
     let mret = possible.mret &&: ~:(exception_ ||: explicit_csr) in
-    let interrupt = possible.interrupt &&: ~:(exception_ ||: explicit_csr ||: mret) in
-    { exception_; explicit_csr; mret; interrupt }
+    let sret = possible.sret &&: ~:(exception_ ||: explicit_csr ||: mret) in
+    let interrupt =
+      possible.interrupt &&: ~:(exception_ ||: explicit_csr ||: mret ||: sret)
+    in
+    { exception_; explicit_csr; mret; sret; interrupt }
   ;;
 
   let any t = reduce ~f:( |: ) (to_list t)
-  let is_machine_trap t = t.exception_ ||: t.interrupt
+  let is_trap t = t.exception_ ||: t.interrupt
 end
 
 module I = struct
@@ -80,14 +84,14 @@ let create
   let%hw.Detect_exception.O.Of_signal detected =
     Detect_exception.hierarchical ~scope detect_exception
   in
-  let mstatus = Csrs.Mstatus.Fields.of_register csrs.mstatus in
-  let%hw interrupt_enabled = csrs.mie.:(11) &&: (csrs.privilege <>:. 3 ||: mstatus.mie) in
+  let%hw interrupt_enabled = wire 1 in
   let%hw can_start = ~:trap_started &&: m_stage.valid &&: ~:(m_stage.stall) in
   let%hw.Action.Of_signal start =
     Action.prioritize
       { exception_ = detected.exception_request.valid
       ; explicit_csr = detected.explicit_csr.valid
       ; mret = detected.mret
+      ; sret = detected.sret
       ; interrupt = interrupt_request.valid &&: interrupt_enabled
       }
     |> Action.map ~f:(fun requested -> can_start &&: requested)
@@ -102,41 +106,41 @@ let create
     Types.Clocking.cut_through_reg clocking ~enable:can_start next_pc
   in
   let%hw epc = mux2 squash_M pc next_pc_latched in
-  (* Go to trap handler PC from mtvec on trap, to epc on return, and to next PC
-     if this is just a CSR update. *)
-  let%hw mtvec_base = csrs.mtvec.:[31, 2] @: zero 2 in
-  let%hw mtvec_vectored =
-    mtvec_base |: uresize ~width:32 (sll interrupt_request.value ~by:2)
+  let%hw.Decode_trap.O.Of_signal decoded_trap =
+    Decode_trap.hierarchical
+      ~scope
+      { epc
+      ; trap_value = mux2 start.exception_ detected.exception_request.value (zero 32)
+      ; exception_cause = detected.exception_request.cause
+      ; interrupt_cause = interrupt_request.value
+      ; csrs
+      ; trap = Action.is_trap start
+      ; interrupt = start.interrupt
+      ; mret = start.mret
+      ; sret = start.sret
+      }
   in
-  let%hw mtvec_use_vectored = start.interrupt &&: (csrs.mtvec.:[1, 0] ==:. 1) in
+  interrupt_enabled <-- decoded_trap.interrupt_enabled;
+  (* Go to the decoded trap/return PC, or to the sequential PC if this is just
+     an explicit CSR update. *)
   let%hw redirect_pc =
     Types.Clocking.cut_through_reg
       clocking
       ~enable:action_start
-      (mux2 mtvec_use_vectored mtvec_vectored
-       @@ mux2 start.mret csrs.mepc
-       @@ mux2 start.explicit_csr next_pc_latched
-       @@ mtvec_base)
+      (mux2 start.explicit_csr next_pc_latched decoded_trap.handler_pc)
+  in
+  (* TODO: figure out interrupt pending interface *)
+  let%hw mip =
+    mux2 interrupt_request.valid (of_int_trunc ~width:32 (1 lsl 11)) (zero 32)
   in
   (* Update CSRs when trap begins. *)
   let%hw.Csr_bank.O.Of_signal csr_bank =
     Csr_bank.hierarchical
       ~scope
       { clocking
+      ; mip
       ; explicit_write = { detected.explicit_csr with valid = start.explicit_csr }
-      ; trap_write =
-          { epc
-          ; trap_value = mux2 start.exception_ detected.exception_request.value (zero 32)
-          ; cause =
-              mux2
-                start.exception_
-                detected.exception_request.cause
-                (vdd @: zero 27 @: interrupt_request.value)
-          ; csrs
-          ; trap = Action.is_machine_trap start
-          ; mret = start.mret
-          ; sret = gnd
-          }
+      ; trap_write = decoded_trap.update
       }
   in
   Csrs.Of_signal.assign csrs csr_bank.csrs;

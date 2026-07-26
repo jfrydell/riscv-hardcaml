@@ -22,6 +22,9 @@ module Update_sim = Cyclesim.With_interface (Update_circuit.I) (Update_circuit.O
 module Csr_bank_sim =
   Cyclesim.With_interface (Privileged.Csr_bank.I) (Privileged.Csr_bank.O)
 
+module Decode_trap_sim =
+  Cyclesim.With_interface (Privileged.Decode_trap.I) (Privileged.Decode_trap.O)
+
 let bits value = Bits.of_int_trunc ~width:32 value
 let bit value = Bits.of_bool value
 
@@ -67,6 +70,116 @@ let check name actual expected =
   let expected = Int32.of_int_exn expected in
   if not (Int32.equal actual expected)
   then raise_s [%message "Unexpected trap CSR value" (name : string) (actual : int32)]
+;;
+
+let decode_csrs
+  ?(privilege = 0)
+  ?(mstatus = 0)
+  ?(medeleg = 0)
+  ?(mideleg = 0)
+  ?(mie = 0)
+  ?(mtvec = 0)
+  ?(stvec = 0)
+  ?(mepc = 0)
+  ?(sepc = 0)
+  ()
+  =
+  { (Privileged.Csrs.Of_bits.zero ()) with
+    privilege = bits privilege
+  ; mstatus = bits mstatus
+  ; medeleg = bits medeleg
+  ; mideleg = bits mideleg
+  ; mie = bits mie
+  ; mtvec = bits mtvec
+  ; stvec = bits stvec
+  ; mepc = bits mepc
+  ; sepc = bits sepc
+  }
+;;
+
+let evaluate_decode
+  ?(epc = 0)
+  ?(trap_value = 0)
+  ?(exception_cause = 0)
+  ?(interrupt_cause = 11)
+  ?(trap = true)
+  ?(interrupt = false)
+  ?(mret = false)
+  ?(sret = false)
+  csrs
+  =
+  let scope = Scope.create ~flatten_design:true () in
+  let sim = Decode_trap_sim.create (Privileged.Decode_trap.create scope) in
+  Privileged.Decode_trap.I.iter2
+    (Cyclesim.inputs sim)
+    { epc = bits epc
+    ; trap_value = bits trap_value
+    ; exception_cause = bits exception_cause
+    ; interrupt_cause = Bits.of_int_trunc ~width:4 interrupt_cause
+    ; csrs
+    ; trap = bit trap
+    ; interrupt = bit interrupt
+    ; mret = bit mret
+    ; sret = bit sret
+    }
+    ~f:(fun input value -> input := value);
+  Cyclesim.cycle sim;
+  Privileged.Decode_trap.O.map (Cyclesim.outputs sim) ~f:(fun output -> !output)
+;;
+
+let test_decode_trap () =
+  let delegated_exception =
+    evaluate_decode
+      ~epc:0x44
+      ~exception_cause:8
+      (decode_csrs ~privilege:0 ~medeleg:(1 lsl 8) ~mtvec:0x100 ~stvec:0x201 ())
+  in
+  if not (Bits.to_bool delegated_exception.update.higher_priv_s)
+  then raise_s [%message "Delegated exception did not target supervisor mode"];
+  check "delegated exception handler" delegated_exception.handler_pc 0x200;
+  let machine_exception =
+    evaluate_decode
+      ~exception_cause:8
+      (decode_csrs ~privilege:3 ~medeleg:(1 lsl 8) ~mtvec:0x100 ~stvec:0x200 ())
+  in
+  if Bits.to_bool machine_exception.update.higher_priv_s
+  then raise_s [%message "Machine-mode exception was incorrectly delegated"];
+  check "machine exception handler" machine_exception.handler_pc 0x100;
+  let delegated_interrupt =
+    evaluate_decode
+      ~interrupt:true
+      (decode_csrs
+         ~privilege:1
+         ~mstatus:(1 lsl 1)
+         ~mideleg:(1 lsl 11)
+         ~mie:(1 lsl 11)
+         ~stvec:0x2f1
+         ())
+  in
+  if not (Bits.to_bool delegated_interrupt.interrupt_enabled)
+  then raise_s [%message "Enabled delegated interrupt was masked"];
+  if not
+       (Int32.equal
+          (Bits.to_int32_trunc delegated_interrupt.update.cause)
+          (Int32.of_string "0x8000000b"))
+  then raise_s [%message "Interrupt cause was not constructed by trap decoding"];
+  if not (Bits.to_bool delegated_interrupt.update.higher_priv_s)
+  then raise_s [%message "Delegated interrupt did not target supervisor mode"];
+  check "delegated vectored handler" delegated_interrupt.handler_pc 0x31c;
+  let masked_in_machine =
+    evaluate_decode
+      ~interrupt:true
+      (decode_csrs ~privilege:3 ~mstatus:(1 lsl 3) ~mideleg:(1 lsl 11) ~mie:(1 lsl 11) ())
+  in
+  if Bits.to_bool masked_in_machine.interrupt_enabled
+  then raise_s [%message "Delegated interrupt was not masked in machine mode"];
+  let supervisor_return =
+    evaluate_decode
+      ~trap:false
+      ~sret:true
+      (decode_csrs ~privilege:1 ~mepc:0x100 ~sepc:0x204 ())
+  in
+  check "supervisor return PC" supervisor_return.handler_pc 0x204
 ;;
 
 let test_machine_trap () =
@@ -157,7 +270,7 @@ let test_csr_bank_trap_write () =
   check "bank mtval" !(outputs.csrs.mtval) 0x4321;
   check "bank privilege" !(outputs.csrs.privilege) 3;
   inputs.trap_write.trap := Bits.gnd;
-  inputs.trap_write.mret := Bits.vdd;
+  inputs.trap_write.ret := Bits.vdd;
   Cyclesim.cycle sim;
   if not (Bits.to_bool !(outputs.write_done))
   then raise_s [%message "Trap return CSR write did not signal completion"];
@@ -166,6 +279,7 @@ let test_csr_bank_trap_write () =
 ;;
 
 let () =
+  test_decode_trap ();
   test_machine_trap ();
   test_supervisor_trap ();
   test_machine_return ();
