@@ -274,15 +274,17 @@ let create scope (i : _ I.t) =
     ; store_data = rs2val X
     }
   in
-  (* CSR instructions are also done in memory stage, where they block any
-     interrupt until complete to maintain atomicity. *)
-  let%hw.Riscv_csr.Csr.O.Of_signal csr_result =
-    Riscv_csr.Csr.hierarchical
-      ~scope
-      { clocking = i.clocking; insn = insn M; rs1 = rs1val M; valid = is_csr M }
+  stall_memory <-- i.from_l1d.stall;
+  let%hw.Privileged.Csrs.Values.Of_signal csrs =
+    Privileged.Csrs.Values.Of_signal.wires ()
   in
-  stall_memory <-- (i.from_l1d.stall ||: (is_csr M &: ~:(csr_result.valid)));
-  let%hw memory_result = mux2 (is_csr M) csr_result.rdval i.from_l1d.load_data in
+  let csr_read_cases =
+    Privileged.Csrs.map2 Privileged.Csrs.addresses csrs ~f:(fun address value ->
+      of_int_trunc ~width:12 address, value)
+    |> Privileged.Csrs.to_list
+  in
+  let%hw csr_read = cases ~default:(zero 32) (insn M).:[31, 20] csr_read_cases in
+  let%hw memory_result = mux2 (is_csr M) csr_read i.from_l1d.load_data in
   (* Pass written value to M for writeback and bypassing, then that or loaded value to W. *)
   rdval M <-- forward_pipeline ~signal:execute_result ~stage:X () M;
   rdval W
@@ -318,15 +320,14 @@ let create scope (i : _ I.t) =
         (rs2 M ==: rd W &: (rs2 M <>: zero 5) -- "bypassWM2")
         (rdval W)
         (forward_pipeline ~signal:(rs2val X) ~stage:X () M);
-  (* CSR gets data from rs1 (not bothering with load/CSR -> CSR bypass). *)
+  (* CSR write data gets the normal W-to-M bypass for rs1. *)
   rs1val M <-- forward_pipeline ~signal:(rs1val X) ~stage:X () M;
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
   let reg_is_load_dest rs = result_in_m X &: (rs ==: rd X) &: (rs <>: zero 5) in
   stall_decode <-- (reg_is_load_dest (rs1 D) |: reg_is_load_dest (rs2 D));
-  let%hw commit_valid = is_insn W &&: ~:(stall W) in
-  (* Trap handling. *)
-  let%hw.Trap.O.Of_signal trap =
-    Trap.hierarchical
+  (* Trap / CSR write handling. *)
+  let%hw.Privileged.Trap.O.Of_signal trap =
+    Privileged.Trap.hierarchical
       ~scope
       { clocking = i.clocking
       ; m_status = { valid = is_insn M; stall = stall_memory }
@@ -334,11 +335,18 @@ let create scope (i : _ I.t) =
       ; next_pc = next_pc M
       ; exception_request = gnd
       ; interrupt_request = gnd
+      ; explicit_csr_update = is_csr M
+      ; explicit_csr_info = { insn = insn M; rs1 = rs1val M }
       }
   in
   trap_active <-- trap.trap_active;
   trap_squash_M <-- trap.squash_M;
   With_valid.iter2 ~f:( <-- ) trap_pc trap.handler_pc;
+  Privileged.Csrs.Values.Of_signal.assign csrs
+  @@ Privileged.Csr_bank.hierarchical
+       ~scope
+       { clocking = i.clocking; writes = trap.csr_writes };
+  let%hw commit_valid = is_insn W &&: ~:(stall W) in
   O.{ to_l1i; to_l1d; commit_pc = { valid = commit_valid; value = pc W } }
 ;;
 

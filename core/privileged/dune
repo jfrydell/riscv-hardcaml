@@ -1,5 +1,5 @@
 (library
- (name riscv_csr)
- (libraries core hardcaml)
+ (name privileged)
+ (libraries core hardcaml utils)
  (preprocess
   (pps ppx_jane ppx_hardcaml)))
