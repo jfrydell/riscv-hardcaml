@@ -92,6 +92,7 @@ let create
       ~scope
       { clocking
       ; explicit_write = { explicit_csr with valid = start_explicit_csr_update }
+      ; trap_write = Trap_csr.Decode.I.Of_signal.zero ()
       }
   in
   (* The trap is finished once the CSR update goes through. *)

@@ -4,6 +4,9 @@ open Hardcaml
 type 'a t =
   { mstatus : 'a [@bits 32]
   ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
+  ; sepc : 'a [@bits 32]
+  ; scause : 'a [@bits 32]
+  ; stval : 'a [@bits 32]
   ; mepc : 'a [@bits 32]
   ; mcause : 'a [@bits 32]
   ; mtval : 'a [@bits 32]
@@ -11,12 +14,17 @@ type 'a t =
   ; custom1 : 'a [@bits 32]
   ; custom2 : 'a [@bits 32]
   ; custom3 : 'a [@bits 32]
+  ; privilege : 'a [@bits 32]
+  (** The current privilege mode. This is an implementation-internal CSR. *)
   }
 [@@deriving hardcaml]
 
 let addresses =
   { mstatus = 0x300
   ; mstatush = 0x301
+  ; sepc = 0x141
+  ; scause = 0x142
+  ; stval = 0x143
   ; mepc = 0x341
   ; mcause = 0x342
   ; mtval = 0x343
@@ -24,6 +32,7 @@ let addresses =
   ; custom1 = 0x7c1
   ; custom2 = 0x7c2
   ; custom3 = 0x7c3
+  ; privilege = 0xfff
   }
 ;;
 
@@ -59,47 +68,61 @@ module Mask = Wrap (Types.Value (struct
 
 (** Utilities for working with mstatus. *)
 module Mstatus = struct
-  let field_mask ~lsb ~width =
-    Signal.sll (Signal.of_int_trunc ~width:32 ((1 lsl width) - 1)) ~by:lsb
-  ;;
+  module Fields = struct
+    type 'a t =
+      { sie : 'a
+      ; mie : 'a
+      ; spie : 'a
+      ; mpie : 'a
+      ; spp : 'a
+      ; mpp : 'a [@bits 2]
+      ; mprv : 'a
+      ; sum : 'a
+      ; mxr : 'a
+      ; tvm : 'a
+      ; tw : 'a
+      ; tsr : 'a
+      }
+    [@@deriving hardcaml]
 
-  (** Bitmask for SIE (supervisor interrupt enable) field. *)
-  let sie = field_mask ~lsb:1 ~width:1
+    let of_register register =
+      { sie = Signal.select register ~high:1 ~low:1
+      ; mie = Signal.select register ~high:3 ~low:3
+      ; spie = Signal.select register ~high:5 ~low:5
+      ; mpie = Signal.select register ~high:7 ~low:7
+      ; spp = Signal.select register ~high:8 ~low:8
+      ; mpp = Signal.select register ~high:12 ~low:11
+      ; mprv = Signal.select register ~high:17 ~low:17
+      ; sum = Signal.select register ~high:18 ~low:18
+      ; mxr = Signal.select register ~high:19 ~low:19
+      ; tvm = Signal.select register ~high:20 ~low:20
+      ; tw = Signal.select register ~high:21 ~low:21
+      ; tsr = Signal.select register ~high:22 ~low:22
+      }
+    ;;
 
-  (** Bitmask for MIE (machine interrupt enable) field. *)
-  let mie = field_mask ~lsb:3 ~width:1
-
-  (** Bitmask for SPIE (supervisor previous interrupt enable) field. *)
-  let spie = field_mask ~lsb:5 ~width:1
-
-  (** Bitmask for MPIE (machine previous interrupt enable) field. *)
-  let mpie = field_mask ~lsb:7 ~width:1
-
-  (** Bitmask for SPP (supervisor previous privilege) field. *)
-  let spp = field_mask ~lsb:8 ~width:1
-
-  (** Bitmask for MPP (machine previous privilege) field. *)
-  let mpp = field_mask ~lsb:11 ~width:2
-
-  (** Bitmask for MPRV (modify privilege) field. *)
-  let mprv = field_mask ~lsb:17 ~width:1
-
-  (** Bitmask for SUM (permit supervisor user memory access) field. *)
-  let sum = field_mask ~lsb:18 ~width:1
-
-  (** Bitmask for MXR (make executable readable) field. *)
-  let mxr = field_mask ~lsb:19 ~width:1
-
-  (** Bitmask for TVM (trap virtual memory) field. *)
-  let tvm = field_mask ~lsb:20 ~width:1
-
-  (** Bitmask for TW (timeout wait) field. *)
-  let tw = field_mask ~lsb:21 ~width:1
-
-  (** Bitmask for TSR (trap SRET) field. *)
-  let tsr = field_mask ~lsb:22 ~width:1
-
-  (** Bitmask for read only zero fields. Includes unimplemented WPRI fields, as well as
-      endianness control, vector/float/additional state,. *)
-  let wpri = Signal.of_bit_string "11111111100000011110011001010101"
+    let to_register { sie; mie; spie; mpie; spp; mpp; mprv; sum; mxr; tvm; tw; tsr } =
+      Signal.concat_msb
+        [ Signal.zero 9
+        ; tsr
+        ; tw
+        ; tvm
+        ; mxr
+        ; sum
+        ; mprv
+        ; Signal.zero 4
+        ; mpp
+        ; Signal.zero 2
+        ; spp
+        ; mpie
+        ; Signal.gnd
+        ; spie
+        ; Signal.gnd
+        ; mie
+        ; Signal.gnd
+        ; sie
+        ; Signal.gnd
+        ]
+    ;;
+  end
 end

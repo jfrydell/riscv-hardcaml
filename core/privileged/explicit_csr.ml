@@ -55,13 +55,16 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
   let update_funs : _ Csrs.t =
     { mstatus =
         (fun ~old_value:_ ~new_value ->
-          (* Only illegal value is MPP = 2. *)
-          mux2
-            (new_value &: Csrs.Mstatus.mpp ==:. 1 lsl 12)
-            (new_value |: Csrs.Mstatus.wpri)
-            new_value
-          &: ~:Csrs.Mstatus.wpri)
+          let fields = Csrs.Mstatus.Fields.of_register new_value in
+          let mpp = mux2 (fields.mpp ==:. 2) (ones 2) fields.mpp in
+          Csrs.Mstatus.Fields.to_register { fields with mpp })
     ; mstatush = (fun ~old_value:_ ~new_value:_ -> zero 32)
+    ; sepc =
+        (fun ~old_value:_ ~new_value ->
+          (* Must preserve alignment. *)
+          new_value &: ones 30 @: zero 2)
+    ; scause = all_legal
+    ; stval = all_legal
     ; mepc =
         (fun ~old_value:_ ~new_value ->
           (* Must preserve alignment. *)
@@ -72,6 +75,7 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
     ; custom1 = all_legal
     ; custom2 = all_legal
     ; custom3 = all_legal
+    ; privilege = (fun ~old_value ~new_value:_ -> old_value)
     }
   in
   Csrs.map3 update_funs update.enable old_values ~f:(fun update_fun enable old_value ->
