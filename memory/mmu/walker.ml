@@ -9,7 +9,7 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; state : 'a State.t
     ; from_tlb : 'a Iface.Tlb_request.t
-    ; read_from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; read_from_mem : 'a Memory_bus.From_mem.t
     }
   [@@deriving hardcaml]
 end
@@ -17,7 +17,7 @@ end
 module O = struct
   type 'a t =
     { to_tlb : 'a Iface.Tlb_response.t
-    ; read_to_mem : 'a Memory_bus.Bus.To_mem.t
+    ; read_to_mem : 'a Memory_bus.To_mem.t
     }
   [@@deriving hardcaml]
 end
@@ -68,9 +68,9 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   ({ to_tlb = { entry = leaf_entry; valid = last_response }
    ; read_to_mem =
        { valid = busy
-       ; access_type = Memory_bus.Bus.Access_type.read_word
+       ; access_type = Memory_bus.Access_type.read_word
        ; addr = read_addr
-       ; data = zero Memory_bus.Bus.cpu_bus_width
+       ; data = zero Memory_bus.cpu_bus_width
        ; store_size = zero 2
        ; last = gnd
        }

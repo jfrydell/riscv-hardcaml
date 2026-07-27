@@ -33,8 +33,6 @@ module Make (Config : Config) = struct
   end
 
   let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) =
-    (* Exercise translation stalls through both L1 caches until real page-table
-       translation is implemented. *)
     let mmu_state =
       { Mmu.State.translation_mode =
           Mmu.State.Translation_mode.Binary.Of_signal.of_enum
@@ -95,70 +93,39 @@ module Make (Config : Config) = struct
         }
     in
     Memory.L1d_cache.To_pipe.Of_signal.assign core_from_l1d l1d.to_pipeline;
+    (* Arbitrate between L1 memory requests. *)
+    let%hw.Memory.Bus.From_mem.Of_signal l1s_from_mem =
+      Memory.Bus.From_mem.Of_signal.wires ()
+    in
+    let%hw.Memory.Bus.Arbiter.Four.O.Of_signal l1s_arb =
+      Memory.Bus.Arbiter.Four.hierarchical
+        ~scope
+        { clocking
+        ; up_req =
+            [ l1i.cache_to_mem; l1i.walker_to_mem; l1d.cache_to_mem; l1d.walker_to_mem ]
+        ; dn_resp = l1s_from_mem
+        }
+    in
+    List.iter2_exn
+      [ l1i_cache_from_mem; l1i_walker_from_mem; l1d_cache_from_mem; l1d_walker_from_mem ]
+      l1s_arb.up_resp
+      ~f:Memory.Bus.From_mem.Of_signal.assign;
     (* Instantiate L2 cache if necessary, or otherwise connect L1s to memory I/O. *)
     match Config.caches with
     | L1s ->
-      let to_mem, responses =
-        Memory.Arbiters.hierarchical
-          ~scope
-          ~clocking
-          ~reqs:
-            [ l1i.cache_to_mem; l1i.walker_to_mem; l1d.cache_to_mem; l1d.walker_to_mem ]
-          ~resp:from_mem
-      in
-      let l1i_cache, l1i_walker, l1d_cache, l1d_walker =
-        match responses with
-        | [ l1i_cache; l1i_walker; l1d_cache; l1d_walker ] ->
-          l1i_cache, l1i_walker, l1d_cache, l1d_walker
-        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
-      in
-      Memory.Bus.From_mem.Of_signal.assign l1i_cache_from_mem l1i_cache;
-      Memory.Bus.From_mem.Of_signal.assign l1i_walker_from_mem l1i_walker;
-      Memory.Bus.From_mem.Of_signal.assign l1d_cache_from_mem l1d_cache;
-      Memory.Bus.From_mem.Of_signal.assign l1d_walker_from_mem l1d_walker;
-      ({ to_mem; commit_pc = core.commit_pc } : _ O.t)
+      Memory.Bus.From_mem.Of_signal.assign l1s_from_mem from_mem;
+      ({ to_mem = l1s_arb.dn_req; commit_pc = core.commit_pc } : _ O.t)
     | L2 ->
-      let%hw.Memory.Bus.From_mem.Of_signal l2_to_l1 =
-        Memory.Bus.From_mem.Of_signal.wires ()
-      in
-      let l2_from_l1, cache_responses =
-        Memory.Arbiters.hierarchical
-          ~scope
-          ~clocking
-          ~reqs:[ l1i.cache_to_mem; l1d.cache_to_mem ]
-          ~resp:l2_to_l1
-      in
-      let l1i_cache, l1d_cache =
-        match cache_responses with
-        | [ l1i; l1d ] -> l1i, l1d
-        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
-      in
-      Memory.Bus.From_mem.Of_signal.assign l1i_cache_from_mem l1i_cache;
-      Memory.Bus.From_mem.Of_signal.assign l1d_cache_from_mem l1d_cache;
       let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
         Memory.Bus.From_mem.Of_signal.wires ()
       in
       let%hw.Memory.L2_cache.O.Of_signal l2 =
         Memory.L2_cache.hierarchical
           ~scope
-          { clocking; from_l1 = l2_from_l1; from_mem = l2_from_mem }
+          { clocking; from_l1 = l1s_arb.dn_req; from_mem = l2_from_mem }
       in
-      Memory.Bus.From_mem.Of_signal.assign l2_to_l1 l2.to_l1;
-      let to_mem, memory_responses =
-        Memory.Arbiters.hierarchical
-          ~scope
-          ~clocking
-          ~reqs:[ l2.to_mem; l1i.walker_to_mem; l1d.walker_to_mem ]
-          ~resp:from_mem
-      in
-      let l2_response, l1i_walker, l1d_walker =
-        match memory_responses with
-        | [ l2; l1i; l1d ] -> l2, l1i, l1d
-        | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
-      in
-      Memory.Bus.From_mem.Of_signal.assign l2_from_mem l2_response;
-      Memory.Bus.From_mem.Of_signal.assign l1i_walker_from_mem l1i_walker;
-      Memory.Bus.From_mem.Of_signal.assign l1d_walker_from_mem l1d_walker;
-      ({ to_mem; commit_pc = core.commit_pc } : _ O.t)
+      Memory.Bus.From_mem.Of_signal.assign l1s_from_mem l2.to_l1;
+      Memory.Bus.From_mem.Of_signal.assign l2_from_mem from_mem;
+      ({ to_mem = l2.to_mem; commit_pc = core.commit_pc } : _ O.t)
   ;;
 end

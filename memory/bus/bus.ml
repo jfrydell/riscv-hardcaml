@@ -27,18 +27,21 @@ end
 
 (** Requests and write data sent toward memory.
 
-    [valid] remains asserted, with a stable request until the receiver raises [ready].
-    Receivers keep [ready] low until at least the cycle in which the response's [last] is
-    asserted, so existing requestors may safely hold a request for the whole transaction.
+    We do not require any guarantees about the stability of the request once [valid] is
+    asserted; it is ignored completely until [ready] is high.
+
+    After accepting a request (with [ready] high), receivers keep [ready] low (not
+    accepting any new request) until at least the cycle in which the response's [last] is
+    asserted. So, requestors may safely hold [valid] high until the response is received
+    (combinationally lowering at [last]).
 
     [data] and [last] carry write-back beats. [store_data] and [store_size] carry a
     write-through store. *)
 module To_mem = struct
   type 'a t =
     { valid : 'a
-    (** The outgoing request is valid, and will be held stable until [ready] signifies its
-        receipt (TODO: does anything even rely on this?). All other fields are ignored
-        while [valid] is low. *)
+    (** The outgoing request is valid. All other fields are ignored unless [valid] and
+        [From_mem.ready] are both high. *)
     ; access_type : 'a Access_type.t
     ; addr : 'a [@bits addr_width]
     ; data : 'a [@bits cpu_bus_width]

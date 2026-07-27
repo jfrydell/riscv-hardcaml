@@ -24,16 +24,15 @@ module Dut = struct
   end
 
   let create scope ({ clocking; request0; request1; request2; from_mem } : _ I.t) =
-    let to_mem, responses =
-      Memory.Arbiters.hierarchical
+    let result =
+      Memory.Bus.Arbiter.Three.hierarchical
         ~scope
-        ~clocking
-        ~reqs:[ request0; request1; request2 ]
-        ~resp:from_mem
+        { clocking; up_req = [ request0; request1; request2 ]; dn_resp = from_mem }
     in
-    match responses with
-    | [ response0; response1; response2 ] -> { O.response0; response1; response2; to_mem }
-    | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+    match result.up_resp with
+    | [ response0; response1; response2 ] ->
+      ({ response0; response1; response2; to_mem = result.dn_req } : _ O.t)
+    | _ -> failwith "unreachable"
   ;;
 end
 

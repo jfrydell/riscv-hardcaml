@@ -23,15 +23,10 @@ module Dut = struct
 
   let create scope ({ clocking; request0; request1; from_mem } : _ I.t) =
     let%hw.Memory.Bus.From_mem.Of_signal to_l1 = Memory.Bus.From_mem.Of_signal.wires () in
-    let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
-      Memory.Bus.From_mem.Of_signal.wires ()
-    in
-    let from_l1, responses =
-      Memory.Arbiters.hierarchical
+    let%tydi { up_resp = responses; dn_req = from_l1 } =
+      Memory.Bus.Arbiter.Two.hierarchical
         ~scope
-        ~clocking
-        ~reqs:[ request0; request1 ]
-        ~resp:to_l1
+        { clocking; up_req = [ request0; request1 ]; dn_resp = to_l1 }
     in
     let response0, response1 =
       match responses with
@@ -39,19 +34,10 @@ module Dut = struct
       | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
     in
     let%hw.Memory.L2_cache.O.Of_signal l2 =
-      Memory.L2_cache.hierarchical ~scope { clocking; from_l1; from_mem = l2_from_mem }
-    in
-    let to_mem, l2_responses =
-      Memory.Arbiters.hierarchical ~scope ~clocking ~reqs:[ l2.to_mem ] ~resp:from_mem
-    in
-    let l2_response =
-      match l2_responses with
-      | [ response ] -> response
-      | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+      Memory.L2_cache.hierarchical ~scope { clocking; from_l1; from_mem }
     in
     Memory.Bus.From_mem.Of_signal.assign to_l1 l2.to_l1;
-    Memory.Bus.From_mem.Of_signal.assign l2_from_mem l2_response;
-    { O.response0; response1; to_mem }
+    { O.response0; response1; to_mem = l2.to_mem }
   ;;
 end
 

@@ -2,9 +2,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Memory_bus.Bus.addr_width
-let bus_width = Memory_bus.Bus.cpu_bus_width
-let block_size_bits = Memory_bus.Bus.block_size_bits
+let addr_width = Memory_bus.addr_width
+let bus_width = Memory_bus.cpu_bus_width
+let block_size_bits = Memory_bus.block_size_bits
 
 (* Match the current L1 geometry until a separate L2 geometry is specified. *)
 let num_sets = 512
@@ -92,16 +92,16 @@ end
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
-    ; from_l1 : 'a Memory_bus.Bus.To_mem.t
-    ; from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; from_l1 : 'a Memory_bus.To_mem.t
+    ; from_mem : 'a Memory_bus.From_mem.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { to_l1 : 'a Memory_bus.Bus.From_mem.t
-    ; to_mem : 'a Memory_bus.Bus.To_mem.t
+    { to_l1 : 'a Memory_bus.From_mem.t
+    ; to_mem : 'a Memory_bus.To_mem.t
     }
   [@@deriving hardcaml]
 end
@@ -134,7 +134,7 @@ module Writeback = struct
   module O = struct
     type 'a t =
       { read_addr : 'a [@bits addr_width]
-      ; to_mem : 'a Memory_bus.Bus.To_mem.t
+      ; to_mem : 'a Memory_bus.To_mem.t
       }
     [@@deriving hardcaml]
   end
@@ -154,7 +154,7 @@ module Writeback = struct
      ; to_mem =
          (* All these outputs go one cycle after read. *)
          { valid = dirty_in &: active
-         ; access_type = Memory_bus.Bus.Access_type.write_back
+         ; access_type = Memory_bus.Access_type.write_back
          ; addr = Types.Clocking.reg clocking read_addr
          ; data = data_in
          ; store_size = zero 2
@@ -188,7 +188,7 @@ module Read_stream = struct
   module O = struct
     type 'a t =
       { read_addr : 'a [@bits addr_width]
-      ; to_l1 : 'a Memory_bus.Bus.From_mem.t
+      ; to_l1 : 'a Memory_bus.From_mem.t
       }
     [@@deriving hardcaml]
   end
@@ -398,21 +398,21 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
   in
   loaded_word <-- data_mem.(0);
   loaded_dirty <-- dirty_mem.(0);
-  let%hw.Memory_bus.Bus.To_mem.Of_signal read_to_mem =
+  let%hw.Memory_bus.To_mem.Of_signal read_to_mem =
     { valid =
         filling &&: ~:fill_done
         (* TODO: probably urn off as soon as first byte gets back? or separate ready? *)
-    ; access_type = Memory_bus.Bus.Access_type.read_block
+    ; access_type = Memory_bus.Access_type.read_block
     ; addr = active_access.addr
     ; data = zero bus_width
     ; store_size = zero 2
     ; last = gnd
     }
   in
-  let%hw.Memory_bus.Bus.To_mem.Of_signal to_mem =
-    Memory_bus.Bus.To_mem.Of_signal.mux2 writing_back writeback.to_mem read_to_mem
+  let%hw.Memory_bus.To_mem.Of_signal to_mem =
+    Memory_bus.To_mem.Of_signal.mux2 writing_back writeback.to_mem read_to_mem
   in
-  let%hw.Memory_bus.Bus.From_mem.Of_signal to_l1 =
+  let%hw.Memory_bus.From_mem.Of_signal to_l1 =
     { read_stream.to_l1 with ready = take_incoming }
   in
   ({ to_l1; to_mem } : _ O.t)

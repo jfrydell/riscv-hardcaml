@@ -10,6 +10,7 @@ let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.cpu_bus_width
 let word_base_addr addr = addr land lnot (word_size_bytes - 1)
 let block_base_addr addr = addr land lnot (block_size_bytes - 1)
 let zero = I.Of_bits.zero ()
+let ready = { zero with ready = Bits.vdd }
 
 let read_word_from_mem mem addr =
   List.init word_size_bytes ~f:(fun byte_index ->
@@ -65,22 +66,15 @@ let request_kind ({ access_type; _ } : Bits.t O.t) =
 let merge_inputs = Step.merge_inputs
 
 let spawn ~mem ~delay_cycles ~inputs ~outputs =
+  (* Process any new request that arrived on the previous cycle. [ready] must
+     have been asserted the cycle that [prev_outs] was called. *)
   let rec loop (prev_outs : Step.O_data.t) =
-    (* On a completion cycle the arbiter may already present the next request before the
-       edge. Dispatching that value directly avoids an idle cycle between transactions. *)
     let request = prev_outs.before_edge in
     if not (Bits.to_bool request.valid)
     then (
-      let%bind.Step outs = Step.cycle zero in
+      let%bind.Step outs = Step.cycle ready in
       loop outs)
     else handle_request request
-  and continue_after_completion (outs : Step.O_data.t) =
-    (* An arbiter can present a different owner's request during the completion cycle.
-       Consume that request immediately. If nobody was waiting, [loop] first lowers
-       [ready], then waits for a later request. *)
-    if Bits.to_bool outs.before_edge.valid
-    then handle_request outs.before_edge
-    else loop outs
   and handle_request (request : Bits.t O.t) =
     match request_kind request with
     | `Read_block ->
@@ -101,7 +95,7 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
           ; ready = Bits.vdd
           }
       in
-      continue_after_completion outs
+      loop outs
     | `Write_back ->
       let cycles = delay_cycles () in
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
@@ -109,8 +103,8 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
         mem
         ~key:(Bits.to_int_trunc request.addr |> word_base_addr)
         ~data:request.data;
-      let%bind.Step outs = Step.cycle { zero with ready = Bits.vdd } in
-      continue_after_completion outs
+      let%bind.Step outs = Step.cycle ready in
+      loop outs
     | `Write_through ->
       let cycles = delay_cycles () in
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
@@ -129,8 +123,8 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
              ~addr
              ~store_data:request.data
              ~store_size:request.store_size);
-      let%bind.Step outs = Step.cycle { zero with ready = Bits.vdd } in
-      continue_after_completion outs
+      let%bind.Step outs = Step.cycle ready in
+      loop outs
   and stream_block _request ~addr ~remaining_words =
     let cycles = delay_cycles () in
     let%bind.Step () = Step.delay zero ~num_cycles:cycles in
@@ -147,12 +141,14 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
         }
     in
     if last
-    then continue_after_completion outs
+    then loop outs
     else
       stream_block
         _request
         ~addr:(addr + word_size_bytes)
         ~remaining_words:(remaining_words - 1)
   in
-  Step.spawn_io ~inputs ~outputs loop
+  Step.spawn_io ~inputs ~outputs (fun _ ->
+    let%bind.Step outs = Step.cycle ready in
+    loop outs)
 ;;

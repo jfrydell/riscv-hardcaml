@@ -2,9 +2,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Memory_bus.Bus.addr_width
-let bus_width = Memory_bus.Bus.cpu_bus_width
-let block_size_bits = Memory_bus.Bus.block_size_bits
+let addr_width = Memory_bus.addr_width
+let bus_width = Memory_bus.cpu_bus_width
+let block_size_bits = Memory_bus.block_size_bits
 
 (* Match the current L1 D-cache geometry. *)
 let num_sets = 512
@@ -45,8 +45,8 @@ module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
     ; mmu_state : 'a Mmu.State.t
-    ; cache_from_mem : 'a Memory_bus.Bus.From_mem.t
-    ; walker_from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; cache_from_mem : 'a Memory_bus.From_mem.t
+    ; walker_from_mem : 'a Memory_bus.From_mem.t
     ; from_pipeline : 'a From_pipe.t
     }
   [@@deriving hardcaml]
@@ -54,8 +54,8 @@ end
 
 module O = struct
   type 'a t =
-    { cache_to_mem : 'a Memory_bus.Bus.To_mem.t
-    ; walker_to_mem : 'a Memory_bus.Bus.To_mem.t
+    { cache_to_mem : 'a Memory_bus.To_mem.t
+    ; walker_to_mem : 'a Memory_bus.To_mem.t
     ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
@@ -150,7 +150,7 @@ let create
   update_tag <-- (miss &&: cache_from_mem.valid &&: cache_from_mem.last);
   ({ cache_to_mem =
        { valid = miss &&: ~:update_tag
-       ; access_type = Memory_bus.Bus.Access_type.read_block
+       ; access_type = Memory_bus.Access_type.read_block
        ; addr = active_pa
        ; data = zero bus_width
        ; store_size = zero 2

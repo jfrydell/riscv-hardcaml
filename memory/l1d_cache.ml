@@ -5,9 +5,9 @@ open! Core
 open! Hardcaml
 open Signal
 
-let addr_width = Memory_bus.Bus.addr_width
-let bus_width = Memory_bus.Bus.cpu_bus_width
-let block_size_bits = Memory_bus.Bus.block_size_bits
+let addr_width = Memory_bus.addr_width
+let bus_width = Memory_bus.cpu_bus_width
+let block_size_bits = Memory_bus.block_size_bits
 
 (* 512 * 32B blocks = 131 KB L1 cache. *)
 let num_sets = 512
@@ -96,16 +96,16 @@ module I = struct
     { clocking : 'a Types.Clocking.t
     ; mmu_state : 'a Mmu.State.t
     ; from_pipeline : 'a From_pipe.t
-    ; cache_from_mem : 'a Memory_bus.Bus.From_mem.t
-    ; walker_from_mem : 'a Memory_bus.Bus.From_mem.t
+    ; cache_from_mem : 'a Memory_bus.From_mem.t
+    ; walker_from_mem : 'a Memory_bus.From_mem.t
     }
   [@@deriving hardcaml]
 end
 
 module O = struct
   type 'a t =
-    { cache_to_mem : 'a Memory_bus.Bus.To_mem.t
-    ; walker_to_mem : 'a Memory_bus.Bus.To_mem.t
+    { cache_to_mem : 'a Memory_bus.To_mem.t
+    ; walker_to_mem : 'a Memory_bus.To_mem.t
     ; to_pipeline : 'a To_pipe.t
     }
   [@@deriving hardcaml]
@@ -251,18 +251,18 @@ let create
   (* When a load has missed, request the block from memory until we receive the
      last word to fill the block back from memory. *)
   update_tag <-- (load_miss &&: cache_from_mem.last &&: cache_from_mem.valid);
-  let%hw.Memory_bus.Bus.To_mem.Of_signal write_to_mem =
+  let%hw.Memory_bus.To_mem.Of_signal write_to_mem =
     { valid = store_request
-    ; access_type = Memory_bus.Bus.Access_type.write_through
+    ; access_type = Memory_bus.Access_type.write_through
     ; addr = active_access.addr
     ; data = uresize ~width:bus_width active_access.store_data
     ; store_size = active_access.size
     ; last = vdd
     }
   in
-  let%hw.Memory_bus.Bus.To_mem.Of_signal read_to_mem =
+  let%hw.Memory_bus.To_mem.Of_signal read_to_mem =
     { valid = load_miss &&: ~:update_tag
-    ; access_type = Memory_bus.Bus.Access_type.read_block
+    ; access_type = Memory_bus.Access_type.read_block
     ; addr = active_access.addr
     ; data = zero bus_width
     ; store_size = zero 2
@@ -271,8 +271,8 @@ let create
   in
   (* Loads and stores are mutually exclusive, and responses are ignored unless the
      corresponding access is outstanding. *)
-  let%hw.Memory_bus.Bus.To_mem.Of_signal cache_to_mem =
-    Memory_bus.Bus.To_mem.Of_signal.mux2 read_to_mem.valid read_to_mem write_to_mem
+  let%hw.Memory_bus.To_mem.Of_signal cache_to_mem =
+    Memory_bus.To_mem.Of_signal.mux2 read_to_mem.valid read_to_mem write_to_mem
   in
   ({ cache_to_mem
    ; walker_to_mem = translation.walker_to_mem

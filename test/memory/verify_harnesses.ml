@@ -19,13 +19,8 @@ module Pass_through = struct
     [@@deriving hardcaml]
   end
 
-  let create scope ({ clocking; to_mem; from_mem } : _ I.t) =
-    let out_to_mem, responses =
-      Memory.Arbiters.hierarchical ~scope ~clocking ~reqs:[ to_mem ] ~resp:from_mem
-    in
-    match responses with
-    | [ out_from_mem ] -> { O.out_to_mem; out_from_mem }
-    | _ -> raise_s [%message "arbiter returned unexpected number of response ports"]
+  let create _scope ({ clocking = _; to_mem; from_mem } : _ I.t) : _ O.t =
+    { out_to_mem = to_mem; out_from_mem = from_mem }
   ;;
 end
 

@@ -191,87 +191,71 @@ let check_response_word ~expected_addr ~expected_data (response : Bits.t O.t) =
           (expected_data : Bits_set.t)]
 ;;
 
-let emit_read_block ~model_mem ~addr =
-  let event = Event.Read_block { addr } in
-  let request = request_of_event event in
-  let rec loop model_values words_seen response_complete =
-    let%bind.Step outs = Step.cycle request in
-    let model_values =
-      Option.value_map model_mem ~default:model_values ~f:(fun mem ->
-        Block_values.union_mem model_values ~mem ~addr)
-    in
-    let response = outs.before_edge in
-    let words_seen, response_complete =
-      if Bits.to_bool response.valid
-      then (
-        if response_complete then raise_s [%message "read response continued after last"];
-        let expected_addr = block_base_addr addr + (words_seen * word_size_bytes) in
-        let expected_data = Map.find_exn model_values expected_addr in
-        check_response_word ~expected_addr ~expected_data response;
-        let expected_last = words_seen = words_per_block - 1 in
-        let actual_last = Bits.to_bool response.last in
-        if Bool.(actual_last <> expected_last)
-        then
-          raise_s
-            [%message
-              "got incorrect number of words in block read"
-                (actual_last : bool)
-                (expected_last : bool)];
-        words_seen + 1, actual_last)
-      else words_seen, response_complete
-    in
-    if Bits.to_bool response.ready
-    then (
-      if not response_complete
-      then raise_s [%message "read request accepted before its response completed"];
-      Step.return ())
-    else loop model_values words_seen response_complete
-  in
-  let model_values =
-    Option.value_map
-      model_mem
-      ~default:(Block_values.from_mem ~mem:(Int.Table.create ()) ~addr)
-      ~f:(fun mem -> Block_values.from_mem ~mem ~addr)
-  in
-  loop model_values 0 false
-;;
+module Expected_read = struct
+  type t =
+    | Block of
+        { addr : int
+        ; values : Block_values.t ref
+        ; mutable words_seen : int
+        }
+    | Word of
+        { addr : int
+        ; values : Bits_set.t ref
+        }
 
-let emit_read_word ~model_mem ~addr =
-  let event = Event.Read_word { addr } in
-  let request = request_of_event event in
-  let initial_values =
-    Option.value_map
-      model_mem
-      ~default:(Bits_set.singleton (Bits.zero Memory.Bus.cpu_bus_width))
-      ~f:(fun mem -> Bits_set.singleton (read_word_from_mem mem addr))
-  in
-  let rec loop expected_data response_complete =
-    let%bind.Step outs = Step.cycle request in
-    let expected_data =
-      Option.value_map model_mem ~default:expected_data ~f:(fun mem ->
-        Set.add expected_data (read_word_from_mem mem addr))
-    in
-    let response = outs.before_edge in
-    let response_complete =
-      if Bits.to_bool response.valid
-      then (
-        if response_complete
-        then raise_s [%message "word read returned more than one response beat"];
-        check_response_word ~expected_addr:addr ~expected_data response;
-        if not (Bits.to_bool response.last)
-        then raise_s [%message "word read response did not assert last"];
-        true)
-      else response_complete
-    in
-    if Bits.to_bool response.ready
-    then (
-      if not response_complete
-      then raise_s [%message "word read accepted before its response completed"];
-      Step.return ())
-    else loop expected_data response_complete
-  in
-  loop initial_values false
-;;
+  let create ~model_mem = function
+    | Event.Read_block { addr } ->
+      let values =
+        Option.value_map
+          model_mem
+          ~default:(Block_values.from_mem ~mem:(Int.Table.create ()) ~addr)
+          ~f:(fun mem -> Block_values.from_mem ~mem ~addr)
+      in
+      Block { addr; values = ref values; words_seen = 0 }
+    | Event.Read_word { addr } ->
+      let values =
+        Option.value_map
+          model_mem
+          ~default:(Bits_set.singleton (Bits.zero Memory.Bus.cpu_bus_width))
+          ~f:(fun mem -> Bits_set.singleton (read_word_from_mem mem addr))
+      in
+      Word { addr; values = ref values }
+    | Write_back _ | Write_through _ | Delay _ ->
+      raise_s [%message "Expected_read.create called for a non-read event"]
+  ;;
+
+  let update_from_mem t mem =
+    match t with
+    | Block { addr; values; _ } -> values := Block_values.union_mem !values ~mem ~addr
+    | Word { addr; values } -> values := Set.add !values (read_word_from_mem mem addr)
+  ;;
+
+  let check_response t (response : Bits.t O.t) =
+    match t with
+    | Block ({ addr; values; words_seen } as block) ->
+      let expected_addr = block_base_addr addr + (words_seen * word_size_bytes) in
+      check_response_word
+        ~expected_addr
+        ~expected_data:(Map.find_exn !values expected_addr)
+        response;
+      let expected_last = words_seen = words_per_block - 1 in
+      let actual_last = Bits.to_bool response.last in
+      if Bool.(actual_last <> expected_last)
+      then
+        raise_s
+          [%message
+            "got incorrect number of words in block read"
+              (actual_last : bool)
+              (expected_last : bool)];
+      block.words_seen <- words_seen + 1;
+      actual_last
+    | Word { addr; values } ->
+      check_response_word ~expected_addr:addr ~expected_data:!values response;
+      if not (Bits.to_bool response.last)
+      then raise_s [%message "word read response did not assert last"];
+      true
+  ;;
+end
 
 let update_model_for_write model_mem = function
   | Event.Write_through { addr; data; size } ->
@@ -295,13 +279,26 @@ let update_model_for_write model_mem = function
   | Read_block _ | Read_word _ | Delay _ -> ()
 ;;
 
-let emit_write ~model_mem event =
+let emit_request ~model_mem ~active_read ~dispatched_reads ~outstanding_reads event =
   let request = request_of_event event in
+  let expected_read =
+    match event with
+    | Event.Read_block _ | Read_word _ ->
+      Int.incr outstanding_reads;
+      let expected_read = Expected_read.create ~model_mem event in
+      active_read := Some expected_read;
+      Some expected_read
+    | Write_back _ | Write_through _ -> None
+    | Delay _ -> raise_s [%message "emit_request called for a delay event"]
+  in
   let rec loop () =
     let%bind.Step outs = Step.cycle request in
     if Bits.to_bool outs.before_edge.ready
     then (
       update_model_for_write model_mem event;
+      Option.iter expected_read ~f:(fun expected_read ->
+        active_read := None;
+        Queue.enqueue dispatched_reads expected_read);
       Step.return ())
     else loop ()
   in
@@ -309,22 +306,68 @@ let emit_write ~model_mem event =
 ;;
 
 let spawn ?model_mem ~events ~inputs ~outputs () =
+  (* Requests are issued by the main task below. Reads move from [active_read] to
+     [dispatched_reads] when [ready] acknowledges them. Since read data may precede that
+     acknowledgement, the response task buffers response beats until their read has
+     entered the queue. *)
+  let active_read = ref None in
+  let dispatched_reads = Queue.create () in
+  let responses = Queue.create () in
+  let outstanding_reads = ref 0 in
+  let update_expected_values () =
+    Option.iter model_mem ~f:(fun mem ->
+      Option.iter !active_read ~f:(fun read -> Expected_read.update_from_mem read mem);
+      Queue.iter dispatched_reads ~f:(fun read -> Expected_read.update_from_mem read mem))
+  in
+  let check_queued_responses () =
+    let rec loop () =
+      match Queue.peek dispatched_reads, Queue.peek responses with
+      | Some expected, Some response ->
+        let complete = Expected_read.check_response expected response in
+        ignore (Queue.dequeue_exn responses : Bits.t O.t);
+        if complete
+        then (
+          ignore (Queue.dequeue_exn dispatched_reads : Expected_read.t);
+          Int.decr outstanding_reads);
+        loop ()
+      | None, _ | _, None -> ()
+    in
+    loop ()
+  in
+  let rec response_loop () =
+    let%bind.Step outs = Step.cycle Step.input_hold in
+    (* Include the memory value from every cycle in which a read may be in flight. *)
+    update_expected_values ();
+    if Bits.to_bool outs.before_edge.valid then Queue.enqueue responses outs.before_edge;
+    check_queued_responses ();
+    response_loop ()
+  in
+  let rec wait_for_responses () =
+    if !outstanding_reads = 0
+    then (
+      if not (Queue.is_empty responses)
+      then raise_s [%message "received a response without a corresponding read request"];
+      Step.delay zero ~num_cycles:1)
+    else (
+      let%bind.Step _ = Step.cycle zero in
+      wait_for_responses ())
+  in
   let rec loop events =
     match Sequence.next events with
-    | None -> Step.delay zero ~num_cycles:1
+    | None -> wait_for_responses ()
     | Some (Event.Delay cycles, events) ->
       check_nonnegative_delay cycles;
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
       loop events
-    | Some (Event.Read_block { addr }, events) ->
-      let%bind.Step () = emit_read_block ~model_mem ~addr in
-      loop events
-    | Some (Event.Read_word { addr }, events) ->
-      let%bind.Step () = emit_read_word ~model_mem ~addr in
-      loop events
-    | Some (((Event.Write_back _ | Event.Write_through _) as event), events) ->
-      let%bind.Step () = emit_write ~model_mem event in
+    | Some
+        ( ((Event.Read_block _ | Read_word _ | Write_back _ | Write_through _) as event)
+        , events ) ->
+      let%bind.Step () =
+        emit_request ~model_mem ~active_read ~dispatched_reads ~outstanding_reads event
+      in
       loop events
   in
-  Step.spawn_io ~inputs ~outputs (fun _ -> loop events)
+  Step.spawn_io ~inputs ~outputs (fun _ ->
+    let%bind.Step _ = Step.spawn (fun _ -> response_loop ()) in
+    loop events)
 ;;
