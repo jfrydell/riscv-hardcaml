@@ -179,7 +179,7 @@ let bits insn max min =
   Int32.to_int_exn
     (Int32.( land )
        (Int32.( lsr ) insn min)
-       (Int32.of_int_trunc (Int.pow 2 (max - min + 1) - 1)))
+       (Int32.of_int_exn (Int.pow 2 (max - min + 1) - 1)))
 ;;
 
 (* Sign-extend an int with the given number of bits to an int32 *)
@@ -230,9 +230,16 @@ let of_int32 insn =
       | Sll -> Sll, 0x1f (* Shifts only take 5 imm bits and don't sign-extend *)
       | Srl when funct7 = 0x20 -> Sra, 0x1f
       | Srl -> Srl, 0x1f
-      | op -> op, 0xffffffff (* Others take all bits, sign-extended *)
+      | op -> op, -1 (* Others take all bits, sign-extended *)
     in
-    Ok (IntImm (op, { rd; rs1; imm = Int32.(immi land of_int_trunc mask) })))
+    Ok
+      (IntImm
+         ( op
+         , { rd
+           ; rs1
+           ; imm =
+               Int32.(immi land of_int_exn mask)
+           } )))
   else (
     let mem_size () =
       match bits insn 13 12 with
@@ -290,7 +297,7 @@ let of_int32_exn = Fn.compose Or_error.ok_exn of_int32
 
 (* Move a set of bits from an int32 to another location within the int32 *)
 let move_bits value max_ min_ loc =
-  let mask = Int32.of_int_trunc (Int.pow 2 (max_ - min_ + 1) - 1) in
+  let mask = Int32.of_int_exn (Int.pow 2 (max_ - min_ + 1) - 1) in
   Int32.(((value lsr min_) land mask) lsl loc)
 ;;
 
@@ -444,7 +451,7 @@ let%test "roundtrip auipc" =
 ;;
 
 let%test "roundtrip sra" =
-  roundtrip (IntImm (Sra, { rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31 }))
+  roundtrip (IntImm (Sra, { rd = 5; rs1 = 5; imm = Int32.of_int_exn 31 }))
 ;;
 
 let%test "roundtrip csrrwi" =
@@ -455,7 +462,7 @@ let%test "roundtrip system instructions" =
   List.for_all [ Ecall; Ebreak; Mret; Sret ] ~f:roundtrip
 ;;
 
-(* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_trunc 31})
+(* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_exn 31})
 let _ = Stdio.printf "Original sexp:  "; Stdio.print_s (sexp_of_insn failing_insn)
 let _ = Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (to_int32 failing_insn))
 let _ = Stdio.printf "Roundtrip sexp: "; Stdio.print_s (sexp_of_insn (of_int32_exn (to_int32 failing_insn))) *)

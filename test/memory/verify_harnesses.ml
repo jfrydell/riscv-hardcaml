@@ -118,10 +118,13 @@ let%test_unit "write-through emitter reaches handler and updates memory" =
         ~model_mem
         ~events:
           (Sequence.of_list
-             [ Emitters.Event.Write_through { addr = 0x101; data = 0xaa; size = 0 }
+             [ Emitters.Event.Write_through
+                 { addr = 0x101; data = bits_of_hex "00000000000000aa"; size = 0 }
              ; Delay 1
-             ; Write_through { addr = 0x104; data = 0xbeef; size = 1 }
-             ; Write_through { addr = 0x100; data = 0xdeadbeef; size = 2 }
+             ; Write_through
+                 { addr = 0x104; data = bits_of_hex "000000000000beef"; size = 1 }
+             ; Write_through
+                 { addr = 0x100; data = bits_of_hex "00000000deadbeef"; size = 2 }
              ])
         ()
     in
@@ -170,7 +173,7 @@ let%test_unit "unified emitter and handler support word reads and write-backs" =
         ~events:
           (Sequence.of_list
              [ Emitters.Event.Write_back
-                 { addr = 0x208; data = 0x0123456789abcdef; last = true }
+                 { addr = 0x208; data = bits_of_hex "0123456789abcdef"; last = true }
              ; Read_word { addr = 0x204 }
              ])
         ()

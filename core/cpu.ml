@@ -279,7 +279,7 @@ let create scope (i : _ I.t) =
   let%hw.Privileged.Csrs.Of_signal csrs = Privileged.Csrs.Of_signal.wires () in
   let csr_read_cases =
     Privileged.Csrs.map2 Privileged.Csrs.addresses csrs ~f:(fun address value ->
-      of_int_trunc ~width:12 address, value)
+      of_unsigned_int ~width:12 address, value)
     |> Privileged.Csrs.to_list
   in
   let%hw csr_read = cases ~default:(zero 32) (insn M).:[31, 20] csr_read_cases in
@@ -344,7 +344,7 @@ let create scope (i : _ I.t) =
       ; next_pc = next_pc M
       ; detect_exception = { insn = insn M; rs1 = rs1val M; csrs }
       ; interrupt_request =
-          { valid = i.request_interrupt; value = of_int_trunc ~width:4 11 }
+          { valid = i.request_interrupt; value = of_unsigned_int ~width:4 11 }
       }
   in
   trap_active <-- trap.trap_active;

@@ -18,7 +18,7 @@ let pte ~ppn ~read ~write ~execute ~user ~global =
     lor (user lsl 4)
     lor (global lsl 5)
   in
-  Bits.of_int_trunc ~width:Mmu.Iface.addr_width ((ppn lsl 10) lor flags)
+  Bits.of_unsigned_int ~width:Mmu.Iface.addr_width ((ppn lsl 10) lor flags)
 ;;
 
 let second_level_base root_index = second_level_first + (root_index * second_level_stride)

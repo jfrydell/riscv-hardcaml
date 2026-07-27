@@ -114,7 +114,8 @@ let%test_unit "write then read through l2 cache" =
        ~model_mem
        ~write_events:
          (Sequence.of_list
-            [ Emitters.Event.Write_through { addr = 0x104; data = 0xdeadbeef; size = 2 } ])
+            [ Emitters.Event.Write_through
+                { addr = 0x104; data = bits_of_hex "00000000deadbeef"; size = 2 } ])
        ~read_events:
          (Sequence.of_list [ Emitters.Event.Delay 40; Read_block { addr = 0x104 } ]))
 ;;

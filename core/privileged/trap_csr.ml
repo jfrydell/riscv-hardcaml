@@ -47,7 +47,7 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
     Csrs.Mstatus.Fields.Of_signal.mux2 update.trap trap_mstatus return_mstatus
     |> Csrs.Mstatus.Fields.to_register
   in
-  let trap_privilege = mux2 higher_priv_s (of_int_trunc ~width:2 1) (ones 2) in
+  let trap_privilege = mux2 higher_priv_s (of_unsigned_int ~width:2 1) (ones 2) in
   let return_privilege = mux2 higher_priv_s (gnd @: old_mstatus.spp) old_mstatus.mpp in
   let new_privilege =
     mux2 update.trap trap_privilege return_privilege |> uresize ~width:32

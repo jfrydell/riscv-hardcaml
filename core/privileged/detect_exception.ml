@@ -64,10 +64,10 @@ let create scope ({ insn; rs1; csrs } : _ I.t) =
   in
   let%hw ecall_cause =
     cases
-      ~default:(of_int_trunc ~width:32 11)
+      ~default:(of_unsigned_int ~width:32 11)
       csrs.privilege.:[1, 0]
-      [ of_int_trunc ~width:2 0, of_int_trunc ~width:32 8
-      ; of_int_trunc ~width:2 1, of_int_trunc ~width:32 9
+      [ of_unsigned_int ~width:2 0, of_unsigned_int ~width:32 8
+      ; of_unsigned_int ~width:2 1, of_unsigned_int ~width:32 9
       ]
   in
   let%hw csr_address = insn.:[31, 20] in
@@ -98,8 +98,8 @@ let create scope ({ insn; rs1; csrs } : _ I.t) =
     ; cause =
         mux2
           illegal_instruction
-          (of_int_trunc ~width:32 2)
-          (mux2 is_ebreak (of_int_trunc ~width:32 3) ecall_cause)
+          (of_unsigned_int ~width:32 2)
+          (mux2 is_ebreak (of_unsigned_int ~width:32 3) ecall_cause)
     ; value = mux2 illegal_instruction insn (zero 32)
     }
   in

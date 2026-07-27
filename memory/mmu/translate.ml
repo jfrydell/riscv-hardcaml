@@ -57,7 +57,7 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
     Types.Clocking.reg_fb ~width:2 ~enable:accept clocking ~f:(fun p -> p +:. 1)
   in
   let%hw stall_amount =
-    mux phase @@ List.map ~f:(of_int_trunc ~width:2) [ 1; 2; 0; 0 ]
+    mux phase @@ List.map ~f:(of_unsigned_int ~width:2) [ 1; 2; 0; 0 ]
     |> mux2
          (State.Translation_mode.Binary.Of_signal.is state.translation_mode Bare)
          (zero 2)

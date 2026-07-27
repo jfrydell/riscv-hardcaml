@@ -42,7 +42,7 @@ let branchop () =
 let imm maxbit minbit =
   let unsigned =
     Int32.( lsl )
-      (Random.int32 (Int.pow 2 (maxbit - minbit + 1) |> Int32.of_int_trunc))
+      (Random.int32 (Int.pow 2 (maxbit - minbit + 1) |> Int32.of_int_exn))
       minbit
   in
   Int32.((unsigned lsl Int.(32 - maxbit)) asr Int.(32 - maxbit))

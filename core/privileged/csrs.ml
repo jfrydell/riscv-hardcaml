@@ -91,7 +91,7 @@ module Mask = Wrap (Types.Value (struct
 (** Utilities for working with mstatus. *)
 module Mstatus = struct
   let sstatus_mask =
-    Signal.of_int_trunc
+    Signal.of_unsigned_int
       ~width:32
       ((1 lsl 1) lor (1 lsl 5) lor (1 lsl 8) lor (1 lsl 18) lor (1 lsl 19))
   ;;
@@ -162,7 +162,7 @@ end
     Machine external interrupt is currently the only interrupt input. [sie] is a
     restricted view of [mie], exposing only interrupts delegated to S mode. *)
 module Interrupt = struct
-  let implemented_mask = Signal.of_int_trunc ~width:32 (1 lsl 11)
+  let implemented_mask = Signal.of_unsigned_int ~width:32 (1 lsl 11)
   let sie_view ~mie ~mideleg = Signal.(mie &: mideleg &: implemented_mask)
   let sip_view ~mip ~mideleg = Signal.(mip &: mideleg &: implemented_mask)
 end

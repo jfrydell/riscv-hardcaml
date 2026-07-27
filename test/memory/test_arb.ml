@@ -122,7 +122,8 @@ let%test_unit "arbiter routes mixed accesses and responses to every requester" =
        ~events0:
          (Sequence.of_list
             [ Emitters.Event.Delay 5
-            ; Write_through { addr = 0x10c; data = 0xfeedface; size = 2 }
+            ; Write_through
+                { addr = 0x10c; data = bits_of_hex "00000000feedface"; size = 2 }
             ])
        ~events1:
          (Sequence.of_list

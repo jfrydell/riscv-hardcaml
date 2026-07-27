@@ -131,7 +131,7 @@ let create
   in
   (* TODO: figure out interrupt pending interface *)
   let%hw mip =
-    mux2 interrupt_request.valid (of_int_trunc ~width:32 (1 lsl 11)) (zero 32)
+    mux2 interrupt_request.valid (of_unsigned_int ~width:32 (1 lsl 11)) (zero 32)
   in
   (* Update CSRs when trap begins. *)
   let%hw.Csr_bank.O.Of_signal csr_bank =

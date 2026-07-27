@@ -25,7 +25,7 @@ module Csr_bank_sim =
 module Decode_trap_sim =
   Cyclesim.With_interface (Privileged.Decode_trap.I) (Privileged.Decode_trap.O)
 
-let bits value = Bits.of_int_trunc ~width:32 value
+let bits value = Bits.of_unsigned_int ~width:32 value
 let bit value = Bits.of_bool value
 
 let csrs ?(mstatus = 0) ?(privilege = 0) () =
@@ -115,7 +115,7 @@ let evaluate_decode
     { epc = bits epc
     ; trap_value = bits trap_value
     ; exception_cause = bits exception_cause
-    ; interrupt_cause = Bits.of_int_trunc ~width:4 interrupt_cause
+    ; interrupt_cause = Bits.of_unsigned_int ~width:4 interrupt_cause
     ; csrs
     ; trap = bit trap
     ; interrupt = bit interrupt

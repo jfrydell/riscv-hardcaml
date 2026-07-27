@@ -27,7 +27,7 @@ let read_word_from_mem mem addr =
 
 let apply_write_through_store ~original ~addr ~store_data ~store_size =
   let num_bytes =
-    match Bits.to_int_trunc store_size with
+    match Bits.to_unsigned_int store_size with
     | 0 -> 1
     | 1 -> 2
     | 2 -> 4
@@ -35,13 +35,11 @@ let apply_write_through_store ~original ~addr ~store_data ~store_size =
   in
   let offset = addr mod word_size_bytes in
   let original = Bits.split_lsb ~part_width:8 ~exact:true original in
+  let store_data = Bits.split_lsb ~part_width:8 ~exact:true store_data in
   List.mapi original ~f:(fun index original ->
     if index < offset || index >= offset + num_bytes
     then original
-    else (
-      let byte_index = index - offset in
-      let byte = (Bits.to_int_trunc store_data lsr (byte_index * 8)) land 0xff in
-      Bits.of_int_trunc ~width:8 byte))
+    else List.nth_exn store_data (index - offset))
   |> Bits.concat_lsb
 ;;
 
@@ -80,12 +78,12 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
     | `Read_block ->
       stream_block
         request
-        ~addr:(Bits.to_int_trunc request.addr |> block_base_addr)
+        ~addr:(Bits.to_unsigned_int request.addr |> block_base_addr)
         ~remaining_words:words_per_block
     | `Read_word ->
       let cycles = delay_cycles () in
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
-      let addr = Bits.to_int_trunc request.addr in
+      let addr = Bits.to_unsigned_int request.addr in
       let%bind.Step outs =
         Step.cycle
           { valid = Bits.vdd
@@ -101,14 +99,14 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
       Hashtbl.set
         mem
-        ~key:(Bits.to_int_trunc request.addr |> word_base_addr)
+        ~key:(Bits.to_unsigned_int request.addr |> word_base_addr)
         ~data:request.data;
       let%bind.Step outs = Step.cycle ready in
       loop outs
     | `Write_through ->
       let cycles = delay_cycles () in
       let%bind.Step () = Step.delay zero ~num_cycles:cycles in
-      let addr = Bits.to_int_trunc request.addr in
+      let addr = Bits.to_unsigned_int request.addr in
       let word_addr = word_base_addr addr in
       let original =
         Hashtbl.find mem word_addr
@@ -132,7 +130,7 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
     let%bind.Step outs =
       Step.cycle
         { valid = Bits.vdd
-        ; addr = Bits.of_int_trunc ~width:Memory.Bus.addr_width addr
+        ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
         ; data =
             Hashtbl.find mem addr
             |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)

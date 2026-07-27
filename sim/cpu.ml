@@ -142,7 +142,7 @@ let process_read_request
        := let load_byte addr =
             Hashtbl.find memory addr
             |> Option.value ~default:0
-            |> Bits.of_int_trunc ~width:8
+            |> Bits.of_unsigned_int ~width:8
           in
           let bytes =
             List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
@@ -186,7 +186,7 @@ let process_read_word_request
     := List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
          Hashtbl.find memory Int32.(addr + of_int_exn n)
          |> Option.value ~default:0
-         |> Bits.of_int_trunc ~width:8)
+         |> Bits.of_unsigned_int ~width:8)
        |> Bits.concat_lsb;
     response.valid := Bits.vdd;
     response.last := Bits.vdd;
@@ -200,7 +200,7 @@ let process_write_through_request
   =
   if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.write_through)
   then (
-    let size = Bits.to_int_trunc !(request.store_size) in
+    let size = Bits.to_unsigned_int !(request.store_size) in
     let num_bytes =
       match size with
       | 0 | 1 | 2 -> 1 lsl size

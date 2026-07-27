@@ -42,13 +42,11 @@ let apply_write_through_store ~original ~addr ~store_data ~store_size =
   in
   let offset = addr mod word_size_bytes in
   let original = Bits.split_lsb ~part_width:8 ~exact:true original in
+  let store_data = Bits.split_lsb ~part_width:8 ~exact:true store_data in
   List.mapi original ~f:(fun index original ->
     if index < offset || index >= offset + num_bytes
     then original
-    else (
-      let byte_index = index - offset in
-      let byte = (store_data lsr (byte_index * 8)) land 0xff in
-      Bits.of_int_trunc ~width:8 byte))
+    else List.nth_exn store_data (index - offset))
   |> Bits.concat_lsb
 ;;
 
@@ -71,12 +69,14 @@ module Event = struct
     | Read_word of { addr : int }
     | Write_back of
         { addr : int
-        ; data : int
+        ; data : Bits.t
         ; last : bool
+        (** At the moment, we just toggle this randomly, rather than always writing back
+            entire blocks; the current L2 ignores it anyway. *)
         }
     | Write_through of
         { addr : int
-        ; data : int
+        ; data : Bits.t
         ; size : int
         }
     | Delay of int
@@ -99,7 +99,11 @@ module Event = struct
     Quickcheck.Generator.weighted_union
       [ ( 3.
         , let%bind size = Int.gen_incl 0 2
-          and data = Int.gen_uniform_incl Int.min_value Int.max_value in
+          and data =
+            Quickcheck.Generator.map
+              (Int64.gen_uniform_incl Int64.min_value Int64.max_value)
+              ~f:(Bits.of_signed_int64 ~width:Memory.Bus.cpu_bus_width)
+          in
           let%map addr = address_generator ~size ~max_set () in
           Write_through { addr; data; size } )
       ; ( 1.
@@ -144,7 +148,7 @@ let request_of_event = function
     { I.valid = Bits.vdd
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with read_block = Bits.vdd }
-    ; addr = Bits.of_int_trunc ~width:Memory.Bus.addr_width addr
+    ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data = Bits.zero Memory.Bus.cpu_bus_width
     ; store_size = Bits.zero 2
     ; last = Bits.gnd
@@ -152,7 +156,7 @@ let request_of_event = function
   | Event.Read_word { addr } ->
     { I.valid = Bits.vdd
     ; access_type = { (Memory.Bus.Access_type.Of_bits.zero ()) with read_word = Bits.vdd }
-    ; addr = Bits.of_int_trunc ~width:Memory.Bus.addr_width addr
+    ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data = Bits.zero Memory.Bus.cpu_bus_width
     ; store_size = Bits.zero 2
     ; last = Bits.gnd
@@ -161,8 +165,8 @@ let request_of_event = function
     { I.valid = Bits.vdd
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with write_back = Bits.vdd }
-    ; addr = Bits.of_int_trunc ~width:Memory.Bus.addr_width addr
-    ; data = Bits.of_int_trunc ~width:Memory.Bus.cpu_bus_width data
+    ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
+    ; data
     ; store_size = Bits.zero 2
     ; last = Bits.of_bool last
     }
@@ -170,16 +174,16 @@ let request_of_event = function
     { I.valid = Bits.vdd
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with write_through = Bits.vdd }
-    ; addr = Bits.of_int_trunc ~width:Memory.Bus.addr_width addr
-    ; data = Bits.of_int_trunc ~width:Memory.Bus.cpu_bus_width data
-    ; store_size = Bits.of_int_trunc ~width:2 size
+    ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
+    ; data
+    ; store_size = Bits.of_unsigned_int ~width:2 size
     ; last = Bits.vdd
     }
   | Event.Delay _ -> zero
 ;;
 
 let check_response_word ~expected_addr ~expected_data (response : Bits.t O.t) =
-  let actual_addr = Bits.to_int_trunc response.addr in
+  let actual_addr = Bits.to_unsigned_int response.addr in
   if actual_addr <> expected_addr || not (Set.mem expected_data response.data)
   then
     raise_s
@@ -275,7 +279,7 @@ let update_model_for_write model_mem = function
       Hashtbl.set
         mem
         ~key:(word_base_addr addr)
-        ~data:(Bits.of_int_trunc ~width:Memory.Bus.cpu_bus_width data))
+        ~data)
   | Read_block _ | Read_word _ | Delay _ -> ()
 ;;
 

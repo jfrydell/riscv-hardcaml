@@ -15,12 +15,12 @@ module Page_table_memory = struct
          && Bits.to_bool outs.before_edge.access_type.read_word
       then (
         let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
-        let addr = Bits.to_int_trunc outs.before_edge.addr in
+        let addr = Bits.to_unsigned_int outs.before_edge.addr in
         let data = page_table addr in
         loop
           ~inputs:
             { data = Bits.uresize data ~width:Memory.Bus.cpu_bus_width
-            ; addr = Bits.of_int_trunc ~width:Mmu.Iface.addr_width addr
+            ; addr = Bits.of_unsigned_int ~width:Mmu.Iface.addr_width addr
             ; valid = Bits.vdd
             ; last = Bits.vdd
             ; ready = Bits.vdd
@@ -38,8 +38,8 @@ end
 
 let state ~root ~asid ~mode : Bits.t Mmu.State.t =
   { translation_mode = Mmu.State.Translation_mode.Binary.Of_bits.of_enum mode
-  ; asid = Bits.of_int_trunc ~width:Mmu.State.asid_width asid
-  ; page_table_root = Bits.of_int_trunc ~width:Mmu.State.addr_width root
+  ; asid = Bits.of_unsigned_int ~width:Mmu.State.asid_width asid
+  ; page_table_root = Bits.of_unsigned_int ~width:Mmu.State.addr_width root
   }
 ;;
 
@@ -49,7 +49,7 @@ let input ~state ~va ~valid : Bits.t Dut.I.t =
   ; access_type =
       Mmu.Translate.Access_type.Of_bits.of_enum Mmu.Translate.Access_type.Cases.Load
   ; va =
-      { value = Bits.of_int_trunc ~width:Mmu.Iface.addr_width va
+      { value = Bits.of_unsigned_int ~width:Mmu.Iface.addr_width va
       ; valid = Bits.of_bool valid
       }
   }
@@ -59,7 +59,7 @@ let check_pa ~mode ~va (output : Step.O_data.t) =
   let output = Step.O_data.before_edge output in
   if not (Bits.to_bool output.result.valid)
   then raise_s [%message "translation did not become valid" (va : int)];
-  let actual = Bits.to_int_trunc output.result.pa in
+  let actual = Bits.to_unsigned_int output.result.pa in
   match mode with
   | Mmu.State.Translation_mode.Cases.Bare | Mmu.State.Translation_mode.Cases.Bare_debug ->
     if not (Int.equal actual va)

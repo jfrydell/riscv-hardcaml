@@ -36,8 +36,8 @@ module Decode = struct
     let%hw is_sstatus = address ==:. Csrs.addresses.sstatus in
     let%hw is_sie = address ==:. Csrs.addresses.sie in
     let%hw write_address =
-      mux2 is_sstatus (of_int_trunc ~width:12 Csrs.addresses.mstatus)
-      @@ mux2 is_sie (of_int_trunc ~width:12 Csrs.addresses.mie)
+      mux2 is_sstatus (of_unsigned_int ~width:12 Csrs.addresses.mstatus)
+      @@ mux2 is_sie (of_unsigned_int ~width:12 Csrs.addresses.mie)
       @@ address
     in
     let%hw funct3 = insn.:[14, 12] in
@@ -85,7 +85,7 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
   let medeleg_mask =
     (* Illegal instruction, breakpoint, and U/S environment calls are the
        implemented synchronous exceptions which can originate below M. *)
-    of_int_trunc ~width:32 ((1 lsl 2) lor (1 lsl 3) lor (1 lsl 8) lor (1 lsl 9))
+    of_unsigned_int ~width:32 ((1 lsl 2) lor (1 lsl 3) lor (1 lsl 8) lor (1 lsl 9))
   in
   let update_funs : _ Csrs.t =
     { sstatus = unchanged
