@@ -10,7 +10,7 @@ module Update = struct
     { mask : 'a [@bits 32]
     ; value : 'a [@bits 32]
     ; enable : 'a Csrs.Mask.t
-    ; valid : 'a
+    ; valid : 'a [@rtlname "update_valid"]
     (** True when a write is occurring, and used to time trap completion. The [enable]
         mask is used for actually enabling writes. *)
     }
