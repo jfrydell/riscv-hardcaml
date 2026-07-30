@@ -174,7 +174,7 @@ let%test_unit "unified emitter and handler support word reads and write-backs" =
           (Sequence.of_list
              [ Emitters.Event.Write_back
                  { addr = 0x208; data = bits_of_hex "0123456789abcdef"; last = true }
-             ; Read_word { addr = 0x204 }
+             ; Read_word { addr = 0x204; size = 2 }
              ])
         ()
     in

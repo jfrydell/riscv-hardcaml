@@ -72,10 +72,11 @@ module Writeback = struct
      ; to_mem =
          (* All these outputs go one cycle after read. *)
          { valid = dirty_in &: active
+         ; uncacheable = gnd
          ; access_type = Memory_bus.Access_type.write_back
          ; addr = Types.Clocking.reg clocking read_addr
          ; data = data_in
-         ; store_size = zero 2
+         ; size = zero 2
          ; last = active &&: outputting_last
          }
      }
@@ -93,11 +94,13 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
   let incoming_access =
     { Active_access.valid = from_l1.valid
     ; addr = from_l1.addr
+    ; uncacheable = from_l1.valid &&: from_l1.uncacheable
+    ; read_word = from_l1.valid &&: from_l1.access_type.read_word
     ; read_block = from_l1.valid &&: from_l1.access_type.read_block
     ; write_through = from_l1.valid &&: from_l1.access_type.write_through
     ; write_back = gnd
     ; store_data = sel_bottom ~width:bus_width from_l1.data
-    ; store_size = from_l1.store_size
+    ; store_size = from_l1.size
     ; tag = extract_tag from_l1.addr
     ; index = extract_index from_l1.addr
     }
@@ -114,15 +117,25 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
     (Active_access.map next_access ~f:(Types.Clocking.reg clocking));
   let%hw.Metadata.Of_signal read_metadata = Metadata.Of_signal.wires () in
   let%hw tag_match = read_metadata.valid &&: (read_metadata.tag ==: active_access.tag) in
-  let%hw request_valid =
-    active_valid &&: (active_access.read_block ||: active_access.write_through)
+  let%hw cache_request =
+    active_valid
+    &&: ~:(active_access.uncacheable)
+    &&: (active_access.read_block ||: active_access.write_through)
   in
+  let%hw uncacheable_read =
+    active_valid &&: active_access.uncacheable &&: active_access.read_word
+  in
+  let%hw uncacheable_write =
+    active_valid &&: active_access.uncacheable &&: active_access.write_through
+  in
+  let%hw request_valid = cache_request ||: uncacheable_read ||: uncacheable_write in
   let%hw unsupported_access = active_valid &&: ~:request_valid in
   (* If another block is there, do writeback; if/when empty, fill from mem; when done filling, stream block out or perform store. *)
-  let%hw writing_back = request_valid &&: read_metadata.valid &&: ~:tag_match in
-  let%hw filling = request_valid &&: ~:(read_metadata.valid) in
-  let%hw load_hit = request_valid &&: active_access.read_block &&: tag_match in
-  let%hw store_hit = request_valid &&: active_access.write_through &&: tag_match in
+  let%hw writing_back = cache_request &&: read_metadata.valid &&: ~:tag_match in
+  let%hw filling = cache_request &&: ~:(read_metadata.valid) in
+  let%hw load_hit = cache_request &&: active_access.read_block &&: tag_match in
+  let%hw store_hit = cache_request &&: active_access.write_through &&: tag_match in
+  let%hw read_word_done = uncacheable_read &&: from_mem.valid &&: from_mem.last in
   (* Loaded word and dirty bit for the current access. Data memory is accessed
      beginning the cycle after the tag memory, with the accessed address always
      coming from [active_acess] (not [next_access]). So this data isn't valid
@@ -148,7 +161,7 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
   in
   writeback_done <-- (writeback.to_mem.last &&: (from_mem.ready ||: ~:loaded_dirty));
   (* Fill just forwards data from [from_mem] to data mem. *)
-  let%hw fill_done = from_mem.valid &&: from_mem.last in
+  let%hw fill_done = filling &&: from_mem.valid &&: from_mem.last in
   (* Stream block to L1 on load hit. *)
   let read_stream =
     Read_stream.hierarchical
@@ -179,11 +192,18 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
     @@ (* Store hit *)
     active_access.addr
   in
-  access_done <-- (store_hit ||: read_stream.to_l1.last ||: unsupported_access);
+  let%hw uncacheable_write_done = uncacheable_write &&: from_mem.ready in
+  access_done
+  <-- (store_hit
+       ||: read_stream.to_l1.last
+       ||: unsupported_access
+       ||: read_word_done
+       ||: uncacheable_write_done);
   (* Write data for cache line fill or store. *)
-  let%hw data_write_enable = from_mem.valid ||: writing_store.valid in
-  let%hw data_write_addr = mux2 from_mem.valid from_mem.addr writing_store.addr in
-  let%hw data_write_value = mux2 from_mem.valid from_mem.data updated_word in
+  let%hw filling_valid = filling &&: from_mem.valid in
+  let%hw data_write_enable = filling_valid ||: writing_store.valid in
+  let%hw data_write_addr = mux2 filling_valid from_mem.addr writing_store.addr in
+  let%hw data_write_value = mux2 filling_valid from_mem.data updated_word in
   (* Update tag/valid when we finish bringing in new block or evicting old. *)
   (* TODO: since data mem is Write_before_read (for store followed immediately by load), we're wasting a cycle here not reading data until the cycle after [fill_done], when tag is updated. *)
   (* TODO: i suppose same is true for writeback_done. once mem is accepting last beat, can move on to something else. *)
@@ -258,18 +278,44 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
     { valid =
         filling &&: ~:fill_done
         (* TODO: probably urn off as soon as first byte gets back? or separate ready? *)
+    ; uncacheable = gnd
     ; access_type = Memory_bus.Access_type.read_block
     ; addr = active_access.addr
     ; data = zero bus_width
-    ; store_size = zero 2
+    ; size = zero 2
     ; last = gnd
     }
   in
+  let%hw.Memory_bus.To_mem.Of_signal uncacheable_to_mem =
+    { valid = uncacheable_read &&: ~:read_word_done ||: uncacheable_write
+    ; uncacheable = vdd
+    ; access_type =
+        Memory_bus.Access_type.Of_signal.mux2
+          active_access.read_word
+          Memory_bus.Access_type.read_word
+          Memory_bus.Access_type.write_through
+    ; addr = active_access.addr
+    ; data = active_access.store_data
+    ; size = active_access.store_size
+    ; last = vdd
+    }
+  in
   let%hw.Memory_bus.To_mem.Of_signal to_mem =
-    Memory_bus.To_mem.Of_signal.mux2 writing_back writeback.to_mem read_to_mem
+    Memory_bus.To_mem.Of_signal.mux2
+      writing_back
+      writeback.to_mem
+      (Memory_bus.To_mem.Of_signal.mux2
+         (uncacheable_read ||: uncacheable_write)
+         uncacheable_to_mem
+         read_to_mem)
   in
   let%hw.Memory_bus.From_mem.Of_signal to_l1 =
-    { read_stream.to_l1 with ready = take_incoming }
+    { valid = read_stream.to_l1.valid ||: read_word_done
+    ; addr = mux2 read_word_done from_mem.addr read_stream.to_l1.addr
+    ; data = mux2 read_word_done from_mem.data read_stream.to_l1.data
+    ; last = mux2 read_word_done from_mem.last read_stream.to_l1.last
+    ; ready = take_incoming
+    }
   in
   ({ to_l1; to_mem } : _ O.t)
 ;;

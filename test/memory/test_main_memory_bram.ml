@@ -65,7 +65,7 @@ let%test_unit "write then read through main memory BRAM" =
 let access_generator ~accesses =
   let access_generator =
     Quickcheck.Generator.weighted_union
-      [ 1., Emitters.Event.write_through_generator ~max_set:4
+      [ 1., Emitters.Event.write_through_generator ~max_set:4 ~io_accesses:false
       ; 1., Emitters.Event.read_block_generator ~max_set:4
       ]
   in

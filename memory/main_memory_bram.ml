@@ -42,11 +42,13 @@ module Make (Config : Config) = struct
     let incoming_access =
       { Active_access.valid = from_cpu.valid
       ; addr
+      ; uncacheable = from_cpu.valid &&: from_cpu.uncacheable
+      ; read_word = gnd
       ; read_block = from_cpu.valid &&: from_cpu.access_type.read_block
       ; write_through = from_cpu.valid &&: from_cpu.access_type.write_through
       ; write_back = gnd
       ; store_data = from_cpu.data
-      ; store_size = from_cpu.store_size
+      ; store_size = from_cpu.size
       ; tag = zero bits_tag
       ; index = zero bits_index
       }

@@ -70,6 +70,8 @@ let generate_program ~insn_count ~insn_stream ~filter =
     let newpc = Riscvemulate.next_pc ~regs:emulator.regs ~pc:!(emulator.pc) ~insn in
     let clobber = Riscvemulate.next_access ~regs:emulator.regs ~insn in
     Int32.(newpc land of_int_exn 3 = zero)
+    (* Keep instruction fetches below the temporary I/O address boundary. *)
+    && Int32.(newpc >= zero)
     && Int32.(newpc <> !(emulator.pc))
     && Sequence.init 4 ~f:(fun i -> Int32.(newpc + of_int_exn i))
        |> Sequence.for_all ~f:(fun addr ->

@@ -50,7 +50,12 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
   let%hw stall = stall_cycles <>:. 0 in
   let%hw accept = ~:stall &&: va.valid in
   let%hw.Iface.Translation.Of_signal result =
-    { pa = Types.Clocking.reg clocking ~enable:accept va.value; valid = vdd; stall }
+    let%hw pa = Types.Clocking.reg clocking ~enable:accept va.value in
+    { pa = mux2 stall (zero addr_width) pa
+    ; io = pa.:(addr_width - 1)
+    ; valid = vdd
+    ; stall
+    }
   in
   (* Cycle through 4 values of stall amount if we're in none_debug mode. *)
   let%hw phase =
@@ -68,7 +73,8 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
         clocking
         (mux2 accept stall_amount @@ mux2 stall (stall_cycles -:. 1) (zero 2));
   (* Output zeros when stalling for testing. *)
-  ({ pa = mux2 stall (zero 32) result.pa; valid = ~:stall &&: result.valid; stall }
+  let%hw pa = mux2 stall (zero 32) result.pa in
+  ({ pa; io = pa.:(addr_width - 1); valid = ~:stall &&: result.valid; stall }
    : _ Iface.Translation.t)
 ;;
 
@@ -119,13 +125,10 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
      module until we actually get a new valid request. *)
   let%hw translating_output = Types.Clocking.reg clocking ~enable:va.valid translating in
   let%hw.Iface.Translation.Of_signal result =
-    { (Iface.Translation.Of_signal.mux2
-         translating_output
-         tlb_out.result
-         bare_translation)
-      with
-      stall
-    }
+    let%hw.Iface.Translation.Of_signal selected_result =
+      Iface.Translation.Of_signal.mux2 translating_output tlb_out.result bare_translation
+    in
+    { selected_result with io = selected_result.pa.:(addr_width - 1); stall }
   in
   ({ result; walker_to_mem = walker_out.read_to_mem } : _ O.t)
 ;;

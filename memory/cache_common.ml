@@ -43,6 +43,8 @@ module Make (Config : Config) = struct
     type 'a t =
       { valid : 'a
       ; addr : 'a [@bits addr_width]
+      ; uncacheable : 'a
+      ; read_word : 'a
       ; read_block : 'a
       ; write_through : 'a
       ; write_back : 'a

@@ -91,7 +91,8 @@ let create
       ; walker_from_mem
       }
   in
-  let%hw active_pa = translation.result.pa in
+  (* TODO: replace this temporary behavior with an instruction-access PMA fault. *)
+  let%hw active_pa = mux2 translation.result.io (zero addr_width) translation.result.pa in
   let%hw translation_stall = translation.result.stall in
   active_pc <-- Types.Clocking.reg clocking next_pc;
   let%hw active_tag = extract_tag active_pa in
@@ -150,10 +151,11 @@ let create
   update_tag <-- (miss &&: cache_from_mem.valid &&: cache_from_mem.last);
   ({ cache_to_mem =
        { valid = miss &&: ~:update_tag
+       ; uncacheable = gnd
        ; access_type = Memory_bus.Access_type.read_block
        ; addr = active_pa
        ; data = zero bus_width
-       ; store_size = zero 2
+       ; size = zero 2
        ; last = gnd
        }
    ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }

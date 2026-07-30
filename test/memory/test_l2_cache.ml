@@ -125,11 +125,11 @@ let access_generator ~writes ~reads =
   let%map write_events =
     Quickcheck.Generator.list_with_length
       writes
-      (Emitters.Event.write_through_generator ~max_set:4)
+      (Emitters.Event.write_through_generator ~max_set:4 ~io_accesses:true)
   and read_events =
     Quickcheck.Generator.list_with_length
       reads
-      (Emitters.Event.read_block_generator ~max_set:4)
+      (Emitters.Event.read_generator ~max_set:4 ~io_accesses:true)
   in
   write_events, read_events
 ;;

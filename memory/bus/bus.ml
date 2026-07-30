@@ -35,38 +35,40 @@ end
     asserted. So, requestors may safely hold [valid] high until the response is received
     (combinationally lowering at [last]).
 
-    [data] and [last] carry write-back beats. [store_data] and [store_size] carry a
-    write-through store. *)
+    [data] and [last] carry write-back beats. [data] and [size] carry a write-through
+    store. *)
 module To_mem = struct
   type 'a t =
     { valid : 'a
     (** The outgoing request is valid. All other fields are ignored unless [valid] and
         [From_mem.ready] are both high. *)
+    ; uncacheable : 'a
+    (** The request must bypass any cache and access the underlying memory directly. *)
     ; access_type : 'a Access_type.t
     ; addr : 'a [@bits addr_width]
     ; data : 'a [@bits cpu_bus_width]
-    ; store_size : 'a [@bits 2]
-    (** For write-throughs, specifies the size of a store (byte, half, or word; 11 is
-        invalid). [addr] must be aligned to this granularity as well (TODO: relax). *)
+    ; size : 'a [@bits 2]
+    (** For write-throughs and read-words, specifies the access size (byte, half, or word;
+        11 is invalid). [addr] must be aligned to this granularity as well (TODO: relax). *)
     ; last : 'a (** The last word of a block is being written-through. *)
     }
   [@@deriving hardcaml]
 
   (** Splits a write-through into bytes to be written with enable bits (byte-granularity
       enables are set regardless of whether this is a valid write-through). *)
-  let write_through_bytes { addr; data; store_size; _ } =
+  let write_through_bytes { addr; data; size; _ } =
     let word_offset = sel_bottom ~width:(address_bits_for (cpu_bus_width / 8)) addr in
     let rep_data ~width =
       List.init (cpu_bus_width / width) ~f:(fun _ -> sel_bottom ~width data) |> concat_lsb
     in
     let data =
-      mux store_size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
+      mux size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
       |> split_lsb ~part_width:8
     in
     let valids =
       [ "0001"; "0011"; "1111" ]
       |> List.map ~f:of_bit_string
-      |> mux store_size
+      |> mux size
       |> uresize ~width:(cpu_bus_width / 8)
       |> log_shift ~f:sll ~by:word_offset
       |> split_lsb ~part_width:1

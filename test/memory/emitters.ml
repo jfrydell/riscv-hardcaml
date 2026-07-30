@@ -8,18 +8,29 @@ let word_size_bytes = Memory.Bus.cpu_bus_width / 8
 let block_size_bytes = Memory.Bus.block_size_bits / 8
 let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.cpu_bus_width
 let conflicting_block_stride = 512 * block_size_bytes
+let io_addr_bit = 1 lsl (Memory.Bus.addr_width - 1)
 let word_base_addr addr = addr land lnot (word_size_bytes - 1)
 let block_base_addr addr = addr land lnot (block_size_bytes - 1)
+let is_io_addr addr = addr land io_addr_bit <> 0
 
 let check_nonnegative_delay cycles =
   if cycles < 0 then raise_s [%message "delay must be nonnegative" (cycles : int)]
 ;;
 
-let address_generator ?(size = 0) ?(max_set = 0) () =
+let address_generator ?(size = 0) ?(max_set = 0) ?(io_accesses = false) () =
   let open Quickcheck.Generator.Let_syntax in
   let%bind set_index = Int.gen_incl 0 max_set in
   let%bind way_number = Int.gen_incl 0 3
-  and word = Int.gen_incl 0 ((2 * words_per_block) - 1) in
+  and word = Int.gen_incl 0 ((2 * words_per_block) - 1)
+  and io =
+    if io_accesses
+    then
+      Quickcheck.Generator.weighted_union
+        [ 3., Quickcheck.Generator.return false
+        ; 1., Quickcheck.Generator.return true
+        ]
+    else Quickcheck.Generator.return false
+  in
   let%map byte_offset =
     match size with
     | 0 -> Int.gen_incl 0 (word_size_bytes - 1)
@@ -27,9 +38,12 @@ let address_generator ?(size = 0) ?(max_set = 0) () =
     | 2 -> Quickcheck.Generator.of_list [ 0; 4 ]
     | size -> raise_s [%message "unsupported store size" (size : int)]
   in
-  (way_number * conflicting_block_stride)
-  + (((set_index * words_per_block) + word) * word_size_bytes)
-  + byte_offset
+  let addr =
+    (way_number * conflicting_block_stride)
+    + (((set_index * words_per_block) + word) * word_size_bytes)
+    + byte_offset
+  in
+  if io then addr lor io_addr_bit else addr
 ;;
 
 let apply_write_through_store ~original ~addr ~store_data ~store_size =
@@ -66,7 +80,10 @@ let read_word_from_mem mem addr =
 module Event = struct
   type t =
     | Read_block of { addr : int }
-    | Read_word of { addr : int }
+    | Read_word of
+        { addr : int
+        ; size : int
+        }
     | Write_back of
         { addr : int
         ; data : Bits.t
@@ -82,19 +99,24 @@ module Event = struct
     | Delay of int
   [@@deriving sexp_of]
 
-  let read_block_generator ~max_set =
+  let read_generator ~max_set ~io_accesses =
     let open Quickcheck.Generator.Let_syntax in
     Quickcheck.Generator.weighted_union
       [ ( 3.
-        , let%map addr = address_generator ~max_set () in
-          Read_block { addr } )
+        , let%bind size = Int.gen_incl 0 2 in
+          let%map addr = address_generator ~size ~max_set ~io_accesses () in
+          if is_io_addr addr then Read_word { addr; size } else Read_block { addr } )
       ; ( 1.
         , let%map cycles = Int.gen_incl 0 20 in
           Delay cycles )
       ]
   ;;
 
-  let write_through_generator ~max_set =
+  let read_block_generator ~max_set =
+    read_generator ~max_set ~io_accesses:false
+  ;;
+
+  let write_through_generator ~max_set ~io_accesses =
     let open Quickcheck.Generator.Let_syntax in
     Quickcheck.Generator.weighted_union
       [ ( 3.
@@ -104,7 +126,7 @@ module Event = struct
               (Int64.gen_uniform_incl Int64.min_value Int64.max_value)
               ~f:(Bits.of_signed_int64 ~width:Memory.Bus.cpu_bus_width)
           in
-          let%map addr = address_generator ~size ~max_set () in
+          let%map addr = address_generator ~size ~max_set ~io_accesses () in
           Write_through { addr; data; size } )
       ; ( 1.
         , let%map cycles = Int.gen_incl 0 20 in
@@ -146,37 +168,41 @@ let zero = I.Of_bits.zero ()
 let request_of_event = function
   | Event.Read_block { addr } ->
     { I.valid = Bits.vdd
+    ; uncacheable = Bits.gnd
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with read_block = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data = Bits.zero Memory.Bus.cpu_bus_width
-    ; store_size = Bits.zero 2
+    ; size = Bits.zero 2
     ; last = Bits.gnd
     }
-  | Event.Read_word { addr } ->
+  | Event.Read_word { addr; size } ->
     { I.valid = Bits.vdd
+    ; uncacheable = Bits.vdd
     ; access_type = { (Memory.Bus.Access_type.Of_bits.zero ()) with read_word = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data = Bits.zero Memory.Bus.cpu_bus_width
-    ; store_size = Bits.zero 2
+    ; size = Bits.of_unsigned_int ~width:2 size
     ; last = Bits.gnd
     }
   | Event.Write_back { addr; data; last } ->
     { I.valid = Bits.vdd
+    ; uncacheable = Bits.gnd
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with write_back = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data
-    ; store_size = Bits.zero 2
+    ; size = Bits.zero 2
     ; last = Bits.of_bool last
     }
   | Event.Write_through { addr; data; size } ->
     { I.valid = Bits.vdd
+    ; uncacheable = Bits.of_bool (is_io_addr addr)
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with write_through = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data
-    ; store_size = Bits.of_unsigned_int ~width:2 size
+    ; size = Bits.of_unsigned_int ~width:2 size
     ; last = Bits.vdd
     }
   | Event.Delay _ -> zero
@@ -216,7 +242,7 @@ module Expected_read = struct
           ~f:(fun mem -> Block_values.from_mem ~mem ~addr)
       in
       Block { addr; values = ref values; words_seen = 0 }
-    | Event.Read_word { addr } ->
+    | Event.Read_word { addr; _ } ->
       let values =
         Option.value_map
           model_mem

@@ -86,7 +86,13 @@ let create scope ({ clocking; state; va; from_walker } : _ I.t) =
   busy
   <-- Utils.sr ~set:accept ~reset:result_valid clocking ~style:`Mealy_reset ~priority:`Set;
   let hold_when_valid = Types.Clocking.cut_through_reg clocking ~enable:result_valid in
-  ({ result = { pa = hold_when_valid result_value; valid = vdd; stall = busy }
+  let%hw result_pa = hold_when_valid result_value in
+  ({ result =
+       { pa = result_pa
+       ; io = result_pa.:(Iface.addr_width - 1)
+       ; valid = vdd
+       ; stall = busy
+       }
    ; to_walker = { vpn = active_vpn; valid = miss }
    }
    : _ O.t)

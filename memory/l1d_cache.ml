@@ -125,12 +125,14 @@ let create
   ({ clocking; mmu_state; from_pipeline; cache_from_mem; walker_from_mem } : _ I.t)
   =
   (* A load missed in the cache, so we must stall and fill the cache line. *)
-  let%hw load_miss = wire 1 in
+  let%hw load_fill = wire 1 in
+  (* An I/O load is uncached, so it stalls until its word response arrives. *)
+  let%hw io_load_stall = wire 1 in
   (* Stall waiting for a store to write-through. *)
   let%hw store_stall = wire 1 in
   (* Stall waiting for address translation. *)
   let%hw stall_translate = wire 1 in
-  let%hw stall = load_miss ||: store_stall ||: stall_translate in
+  let%hw stall = load_fill ||: io_load_stall ||: store_stall ||: stall_translate in
   let%hw.Mmu.Translate.O.Of_signal translation =
     Mmu.Translate.hierarchical
       ~scope
@@ -199,17 +201,25 @@ let create
     Metadata.Of_signal.unpack mem.(0)
   in
   let%hw tag_match = read_metadata.valid &&: (active_tag ==: read_metadata.tag) in
-  load_miss <-- (active_access.load &&: ~:tag_match);
+  load_fill <-- (active_access.load &&: ~:tag_match &&: ~:(translation.result.io));
   (* Loads extract and extend data from a word loaded from memory. *)
   let%hw word_offset = sel_bottom ~width:bits_word_offset active_access.addr in
   let%hw loaded_word = wire bus_width in
-  let%hw load_data =
+  let%hw load_data_ext =
+    load_data_from_word
+      ~word:cache_from_mem.data
+      ~word_offset:(zero bits_word_offset)
+      ~sign_extend:active_access.sign_extend
+      ~size:active_access.size
+  in
+  let%hw load_data_cache =
     load_data_from_word
       ~word:loaded_word
       ~word_offset
       ~sign_extend:active_access.sign_extend
       ~size:active_access.size
   in
+  let%hw load_data = mux2 translation.result.io load_data_ext load_data_cache in
   (* Stores write-through, one cycle after loading the tag (when the instruction is technically in W). *)
   let%hw store_request = active_access.store in
   let%hw store_hit = tag_match &&: store_request in
@@ -228,12 +238,12 @@ let create
       ~size:num_words
       ~write_ports:
         [| { write_clock = clocking.clock
-           ; write_enable = store_hit ||: (load_miss &&: cache_from_mem.valid)
-           ; (* Could probably register load_miss here and elsewhere for timing, as
+           ; write_enable = store_hit ||: (load_fill &&: cache_from_mem.valid)
+           ; (* Could probably register load_fill here and elsewhere for timing, as
                we don't need it to rise immediately and know when it will lower. *)
              write_address =
-               extract_word (mux2 load_miss cache_from_mem.addr active_access.addr)
-           ; write_data = mux2 load_miss cache_from_mem.data store_word
+               extract_word (mux2 load_fill cache_from_mem.addr active_access.addr)
+           ; write_data = mux2 load_fill cache_from_mem.data store_word
            }
         |]
       ~read_ports:
@@ -248,28 +258,41 @@ let create
   loaded_word <-- data_mem.(0);
   (* Stores stall until acknowledged by memory (or a write buffer). *)
   store_stall <-- (store_request &&: ~:(cache_from_mem.ready));
+  (* Loads stall until we get a response.  *)
+  io_load_stall
+  <-- Utils.sr
+        ~style:`Mealy
+        ~set:(active_access.load &&: translation.result.io)
+        ~reset:cache_from_mem.valid
+        clocking;
   (* When a load has missed, request the block from memory until we receive the
      last word to fill the block back from memory. *)
-  update_tag <-- (load_miss &&: cache_from_mem.last &&: cache_from_mem.valid);
+  update_tag <-- (load_fill &&: cache_from_mem.last &&: cache_from_mem.valid);
   let%hw.Memory_bus.To_mem.Of_signal write_to_mem =
     { valid = store_request
+    ; uncacheable = translation.result.io
     ; access_type = Memory_bus.Access_type.write_through
     ; addr = active_access.addr
     ; data = uresize ~width:bus_width active_access.store_data
-    ; store_size = active_access.size
+    ; size = active_access.size
     ; last = vdd
     }
   in
   let%hw.Memory_bus.To_mem.Of_signal read_to_mem =
-    { valid = load_miss &&: ~:update_tag
-    ; access_type = Memory_bus.Access_type.read_block
+    { valid = load_fill &&: ~:update_tag ||: io_load_stall
+    ; uncacheable = translation.result.io
+    ; access_type =
+        Memory_bus.Access_type.Of_signal.mux2
+          translation.result.io
+          Memory_bus.Access_type.read_word
+          Memory_bus.Access_type.read_block
     ; addr = active_access.addr
     ; data = zero bus_width
-    ; store_size = zero 2
+    ; size = active_access.size
     ; last = gnd
     }
   in
-  (* Loads and stores are mutually exclusive, and responses are ignored unless the
+  (* Okay to mux, as loads and stores are mutually exclusive, and responses are ignored unless the
      corresponding access is outstanding. *)
   let%hw.Memory_bus.To_mem.Of_signal cache_to_mem =
     Memory_bus.To_mem.Of_signal.mux2 read_to_mem.valid read_to_mem write_to_mem

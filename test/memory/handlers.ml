@@ -120,7 +120,7 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
              ~original
              ~addr
              ~store_data:request.data
-             ~store_size:request.store_size);
+             ~store_size:request.size);
       let%bind.Step outs = Step.cycle ready in
       loop outs
   and stream_block _request ~addr ~remaining_words =

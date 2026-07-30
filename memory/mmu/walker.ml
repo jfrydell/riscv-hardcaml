@@ -68,10 +68,11 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   ({ to_tlb = { entry = leaf_entry; valid = last_response }
    ; read_to_mem =
        { valid = busy
+       ; uncacheable = gnd
        ; access_type = Memory_bus.Access_type.read_word
        ; addr = read_addr
        ; data = zero Memory_bus.cpu_bus_width
-       ; store_size = zero 2
+       ; size = zero 2
        ; last = gnd
        }
    }

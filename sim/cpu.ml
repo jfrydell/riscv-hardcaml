@@ -200,7 +200,7 @@ let process_write_through_request
   =
   if Bits.to_bool !(request.valid) && Bits.to_bool !(request.access_type.write_through)
   then (
-    let size = Bits.to_unsigned_int !(request.store_size) in
+    let size = Bits.to_unsigned_int !(request.size) in
     let num_bytes =
       match size with
       | 0 | 1 | 2 -> 1 lsl size

@@ -92,6 +92,7 @@ end
 module Translation = struct
   type 'a t =
     { pa : 'a [@bits addr_width] (** The translated address. *)
+    ; io : 'a (** The address is in the uncachable I/O region. *)
     ; valid : 'a (** The address was translated successfully. *)
     ; stall : 'a
     (** The last requested translation is in progress, so the values output here are
