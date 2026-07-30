@@ -13,12 +13,12 @@ depends: [
   "ocaml"
   "dune" {>= "3.16"}
   "core"
-  "core_unix"
   "hardcaml"
-  "hardcaml_circuits"
-  "hardcaml_waveterm"
-  "hardcaml_step_testbench"
-  "hardcaml_test_harness"
+  "ppx_jane"
+  "ppx_hardcaml"
+  "hardcaml_waveterm" {with-test}
+  "hardcaml_step_testbench" {with-test}
+  "hardcaml_test_harness" {with-test}
   "odoc" {with-doc}
 ]
 build: [
