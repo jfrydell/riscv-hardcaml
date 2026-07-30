@@ -128,4 +128,9 @@ module Make (Config : Config) = struct
       Memory.Bus.From_mem.Of_signal.assign l2_from_mem from_mem;
       ({ to_mem = l2.to_mem; commit_pc = core.commit_pc } : _ O.t)
   ;;
+
+  let hierarchical =
+    let module H = Hierarchy.In_scope (I) (O) in
+    H.hierarchical create
+  ;;
 end

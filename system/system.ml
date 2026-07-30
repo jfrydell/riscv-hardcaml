@@ -30,7 +30,7 @@ module Make (Config : Config) = struct
     let%hw.Memory.Bus.From_mem.Of_signal from_mem =
       Memory.Bus.From_mem.Of_signal.wires ()
     in
-    let cpu = Cpu.create scope { clocking; request_interrupt; from_mem } in
+    let cpu = Cpu.hierarchical ~scope { clocking; request_interrupt; from_mem } in
     let%hw.Main_memory.O.Of_signal main_memory =
       Main_memory.hierarchical ~scope { clocking; from_cpu = cpu.to_mem }
     in
