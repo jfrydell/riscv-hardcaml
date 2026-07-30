@@ -1,5 +1,4 @@
 (executable
- (public_name riscvhardcaml)
  (name main)
  (libraries
   core
