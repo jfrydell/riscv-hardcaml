@@ -23,6 +23,7 @@ module Access_type = struct
   let read_word = { (Of_signal.zero ()) with read_word = vdd }
   let write_back = { (Of_signal.zero ()) with write_back = vdd }
   let write_through = { (Of_signal.zero ()) with write_through = vdd }
+  let is_write t = t.write_back ||: t.write_through
 end
 
 (** Requests and write data sent toward memory.
