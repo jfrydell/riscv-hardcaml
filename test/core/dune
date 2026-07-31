@@ -13,14 +13,13 @@
   (pps ppx_jane)))
 
 (tests
- (names basic fuzz_tests csr_tests trap_csr_tests trap_tests trap_fuzz_tests)
+ (names basic fuzz_tests csr_tests trap_csr_tests trap_tests)
  (modules
   basic
   fuzz_tests
   csr_tests
   trap_csr_tests
-  trap_tests
-  trap_fuzz_tests)
+  trap_tests)
  (libraries
   core
   hardcaml

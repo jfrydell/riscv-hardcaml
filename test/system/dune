@@ -5,6 +5,7 @@
   core
   hardcaml
   riscv_system
-  riscvemulate)
+  riscvemulate
+  trap_test_utils)
  (preprocess
   (pps ppx_jane ppx_hardcaml)))

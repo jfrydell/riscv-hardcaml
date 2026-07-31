@@ -9,7 +9,11 @@ module System = Riscv_system.System.Make (struct
 
 module Dut = struct
   module I = struct
-    type 'a t = { clocking : 'a Types.Clocking.t } [@@deriving hardcaml]
+    type 'a t =
+      { clocking : 'a Types.Clocking.t
+      ; request_interrupt : 'a
+      }
+    [@@deriving hardcaml]
   end
 
   module O = struct
@@ -20,8 +24,9 @@ module Dut = struct
     [@@deriving hardcaml]
   end
 
-  let create scope ({ clocking } : _ I.t) =
+  let create scope ({ clocking; request_interrupt } : _ I.t) =
     let system = System.create ~scope ~clocking in
+    Signal.(System.interrupt system <-- request_interrupt);
     System.attach_bram_memory ~size_bytes:0x8000 system;
     let mmio = System.attach_mmio_register ~addr:0x80000000 system in
     let register_value =
@@ -99,6 +104,7 @@ let%test_unit "system routes BRAM and MMIO accesses" =
   let scope = Scope.create ~flatten_design:true () in
   let sim = Sim.create ~config:(Cyclesim.Config.trace `All_named) (Dut.create scope) in
   let inputs = Cyclesim.inputs sim in
+  inputs.request_interrupt := Bits.gnd;
   inputs.clocking.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inputs.clocking.clear := Bits.gnd;
