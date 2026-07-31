@@ -1,0 +1,10 @@
+(library
+ (name test_system)
+ (inline_tests)
+ (libraries
+  core
+  hardcaml
+  riscv_system
+  riscvemulate)
+ (preprocess
+  (pps ppx_jane ppx_hardcaml)))

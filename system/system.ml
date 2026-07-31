@@ -149,6 +149,22 @@ module Make (Config : Config) = struct
     Memory.Bus.From_mem.Of_signal.assign port.to_bus mem.to_cpu
   ;;
 
+  (** Attach a 32-bit read/write MMIO register at [addr]. *)
+  let attach_mmio_register ~addr ({ scope; clocking; _ } as t) =
+    let handler_port = add_access_handler ~addr_pred:(fun a -> Signal.(a ==:. addr)) t in
+    let%hw read_value = Signal.wire 32 in
+    let register =
+      Mmio_register.hierarchical
+        ~scope
+        { clocking; from_bus = handler_port.from_bus; read_value }
+    in
+    Memory.Bus.From_mem.Of_signal.assign handler_port.to_bus register.to_bus;
+    let%hw.Mmio_register.Port.Of_signal port =
+      { read_value; write = register.write; read = register.read }
+    in
+    port
+  ;;
+
   (** Complete the system, preventing new emitter/handler connections and closing open
       wires. *)
   let complete { open_emitter; open_handler; _ } =
