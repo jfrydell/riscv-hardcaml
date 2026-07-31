@@ -30,6 +30,7 @@ module Make (Config : Config) = struct
     { scope : Scope.t
     ; clocking : 'a Types.Clocking.t (** Clock and reset, assigned at creation. *)
     ; cpu : 'a Cpu.O.t (** CPU outputs, assigned at creation. *)
+    ; request_interrupt : 'a
     ; mutable open_emitter : 'a Access_emitting_port.t
     (** A port to connect devices which emit accesses onto the bus. From creation until
         completion, [to_bus] is unassigned wires going into an arbiter, and [from_bus] is
@@ -106,6 +107,9 @@ module Make (Config : Config) = struct
   (** Get CPU outputs. *)
   let cpu { cpu; _ } = cpu
 
+  (** Get interrupt input wire, initially unassigned. *)
+  let interrupt { request_interrupt; _ } = request_interrupt
+
   let create ~scope ~clocking =
     (* Start with an I/O bus unattached to anything. Each of these wires acts as the already-connected [from_bus] from one side's open port, and the unassigned wire [to_bus] for the other. *)
     let%hw.Memory.Bus.To_mem.Of_signal emitter_to_handler =
@@ -114,10 +118,12 @@ module Make (Config : Config) = struct
     let%hw.Memory.Bus.From_mem.Of_signal handler_to_emitter =
       Memory.Bus.From_mem.Of_signal.wires ()
     in
+    let%hw request_interrupt = Signal.wire 1 in
     let t =
       { clocking
       ; scope
       ; cpu = Cpu.O.Of_signal.wires ()
+      ; request_interrupt
       ; open_handler = { to_bus = handler_to_emitter; from_bus = emitter_to_handler }
       ; open_emitter = { to_bus = emitter_to_handler; from_bus = handler_to_emitter }
       }
@@ -127,7 +133,7 @@ module Make (Config : Config) = struct
     let cpu =
       Cpu.hierarchical
         ~scope
-        { clocking; request_interrupt = Signal.gnd; from_mem = cpu_port.from_bus }
+        { clocking; request_interrupt; from_mem = cpu_port.from_bus }
     in
     Memory.Bus.To_mem.Of_signal.assign cpu_port.to_bus cpu.to_mem;
     Cpu.O.Of_signal.assign t.cpu cpu;
