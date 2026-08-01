@@ -267,6 +267,7 @@ let rtl_command =
         let module Cpu =
           Riscv_system.Cpu.Make (struct
             let caches = Riscv_system.Cpu.Cache_config.L2
+            let disable_address_translation = false
           end)
         in
         let circuit =

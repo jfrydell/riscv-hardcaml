@@ -2,11 +2,12 @@ open! Core
 open! Hardcaml
 open Signal
 
+(* TODO: change physical addr width to 34? *)
 let addr_width = 32
 let page_offset_width = 12
 let vpn_width = addr_width - page_offset_width
 let ppn_width = addr_width - page_offset_width
-let asid_width = 16
+let asid_width = 9
 
 (** The bits of a 32-bit Sv32 page-table entry used by this simplified MMU. *)
 module Pte = struct

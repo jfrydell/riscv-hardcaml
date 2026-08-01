@@ -4,6 +4,7 @@ open Hardcaml_waveterm
 
 module Cpu = Riscv_system.Cpu.Make (struct
     let caches = Riscv_system.Cpu.Cache_config.L2
+    let disable_address_translation = true
   end)
 
 module Sim = Cyclesim.With_interface (Cpu.I) (Cpu.O)

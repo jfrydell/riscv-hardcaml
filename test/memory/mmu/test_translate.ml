@@ -36,18 +36,21 @@ module Page_table_memory = struct
   ;;
 end
 
-let state ~root ~asid ~mode : Bits.t Mmu.State.t =
+let state ~root ~asid ~mode ~priv ~fetch_priv : Bits.t Mmu.State.t =
   { translation_mode = Mmu.State.Translation_mode.Binary.Of_bits.of_enum mode
   ; asid = Bits.of_unsigned_int ~width:Mmu.State.asid_width asid
   ; page_table_root = Bits.of_unsigned_int ~width:Mmu.State.addr_width root
+  ; fetch_priv = Bits.of_unsigned_int ~width:2 fetch_priv
+  ; load_store_priv = Bits.of_unsigned_int ~width:2 priv
+  ; executable_readable = Bits.gnd
+  ; supervisor_user_access = Bits.gnd
   }
 ;;
 
-let input ~state ~va ~valid : Bits.t Dut.I.t =
+let input ~state ~access_type ~va ~valid : Bits.t Dut.I.t =
   { Step.input_hold with
     state
-  ; access_type =
-      Mmu.Translate.Access_type.Of_bits.of_enum Mmu.Translate.Access_type.Cases.Load
+  ; access_type = Mmu.Translate.Access_type.Of_bits.of_enum access_type
   ; va =
       { value = Bits.of_unsigned_int ~width:Mmu.Iface.addr_width va
       ; valid = Bits.of_bool valid
@@ -68,11 +71,11 @@ let check_pa ~mode ~va (output : Step.O_data.t) =
     Sample_page_table.check_translation ~va ~actual_pa:actual
 ;;
 
-let issue_translation ~state ~mode ~va ~delay_cycles =
-  let%bind.Step _ = Step.cycle (input ~state ~va ~valid:true) in
+let issue_translation ~state ~access_type ~mode ~va ~delay_cycles =
+  let%bind.Step _ = Step.cycle (input ~state ~access_type ~va ~valid:true) in
   let rec wait_for_result () =
     (* TODO: fails to test back-to-back requests. *)
-    let%bind.Step output = Step.cycle (input ~state ~va ~valid:false) in
+    let%bind.Step output = Step.cycle (input ~state ~access_type ~va ~valid:false) in
     if Bits.to_bool (Step.O_data.before_edge output).result.stall
     then wait_for_result ()
     else (
@@ -83,7 +86,7 @@ let issue_translation ~state ~mode ~va ~delay_cycles =
     if Int.equal remaining_cycles 0
     then Step.return ()
     else (
-      let%bind.Step output = Step.cycle (input ~state ~va ~valid:false) in
+      let%bind.Step output = Step.cycle (input ~state ~access_type ~va ~valid:false) in
       check_pa ~mode ~va output;
       wait_for_held_result (remaining_cycles - 1))
   in
@@ -105,8 +108,10 @@ let run_test ?(timeout = 200) ?(delay_cycles = fun () -> 0) ~page_table translat
     in
     let rec issue_all = function
       | [] -> Step.return ()
-      | (state, mode, va, delay_cycles) :: rest ->
-        let%bind.Step () = issue_translation ~state ~mode ~va ~delay_cycles in
+      | (state, mode, access_type, va, delay_cycles) :: rest ->
+        let%bind.Step () =
+          issue_translation ~state ~access_type ~mode ~va ~delay_cycles
+        in
         issue_all rest
     in
     issue_all translations)
@@ -122,16 +127,89 @@ let%test_unit "two-level page-table walk and TLB hit" =
           ~root:Sample_page_table.root
           ~asid:7
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn lsl 12) lor page_offset0
       , 3 )
     ; ( state
           ~root:Sample_page_table.root
           ~asid:7
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn lsl 12) lor page_offset1
       , 3 )
+    ]
+;;
+
+let%test_unit "effective privilege controls Sv32 translation" =
+  let va = (0x12345 lsl 12) lor 0x34 in
+  run_test
+    ~page_table:Sample_page_table.lookup
+    [ ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
+      , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
+      , va
+      , 0 )
+    ; ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:1
+          ~fetch_priv:1
+      , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
+      , va
+      , 0 )
+    ; ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:3
+          ~fetch_priv:3
+      , Mmu.State.Translation_mode.Cases.Bare
+      , Mmu.Translate.Access_type.Cases.Load
+      , va
+      , 0 )
+    ; ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:3
+      , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
+      , va
+      , 0 )
+    ; ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:3
+      , Mmu.State.Translation_mode.Cases.Bare
+      , Mmu.Translate.Access_type.Cases.Instruction
+      , va
+      , 0 )
+    ; ( state
+          ~root:Sample_page_table.root
+          ~asid:7
+          ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:3
+          ~fetch_priv:0
+      , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Instruction
+      , va
+      , 0 )
     ]
 ;;
 
@@ -144,28 +222,40 @@ let%test_unit "different ASIDs and direct-map conflicts refill the TLB" =
           ~root:Sample_page_table.root
           ~asid:1
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn0 lsl 12) lor 0x100
       , 2 )
     ; ( state
           ~root:Sample_page_table.root
           ~asid:2
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn0 lsl 12) lor 0x200
       , 2 )
     ; ( state
           ~root:Sample_page_table.root
           ~asid:2
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn1 lsl 12) lor 0x300
       , 2 )
     ; ( state
           ~root:Sample_page_table.root
           ~asid:1
           ~mode:Mmu.State.Translation_mode.Cases.Sv32
+          ~priv:0
+          ~fetch_priv:0
       , Mmu.State.Translation_mode.Cases.Sv32
+      , Mmu.Translate.Access_type.Cases.Load
       , (vpn0 lsl 12) lor 0x400
       , 2 )
     ]
@@ -174,6 +264,9 @@ let%test_unit "different ASIDs and direct-map conflicts refill the TLB" =
 type translation =
   { mode : Mmu.State.Translation_mode.Cases.t
   ; asid : int
+  ; priv : int
+  ; fetch_priv : int
+  ; access_type : Mmu.Translate.Access_type.Cases.t
   ; vpn : int
   ; page_offset : int
   ; delay_cycles : int
@@ -191,10 +284,17 @@ let translation_generator =
   in
   let%map mode = mode_generator
   and asid = Int.gen_incl 0 15
+  and priv = Quickcheck.Generator.of_list [ 0; 1; 3 ]
+  and fetch_priv = Quickcheck.Generator.of_list [ 0; 1; 3 ]
+  and access_type =
+    Quickcheck.Generator.of_list
+      [ Mmu.Translate.Access_type.Cases.Load
+      ; Mmu.Translate.Access_type.Cases.Instruction
+      ]
   and vpn = Int.gen_incl 0 ((1 lsl Mmu.Iface.vpn_width) - 1)
   and page_offset = Int.gen_incl 0 ((1 lsl Mmu.Iface.page_offset_width) - 1)
   and delay_cycles = Int.gen_incl 0 12 in
-  { mode; asid; vpn; page_offset; delay_cycles }
+  { mode; asid; priv; fetch_priv; access_type; vpn; page_offset; delay_cycles }
 ;;
 
 let scenario_generator ~length =
@@ -217,11 +317,27 @@ let cycle_values values =
 
 let run_scenario (translations, delay_values) =
   let translations =
-    List.map translations ~f:(fun { mode; asid; vpn; page_offset; delay_cycles } ->
-      ( state ~root:Sample_page_table.root ~asid ~mode
-      , mode
-      , (vpn lsl Mmu.Iface.page_offset_width) lor page_offset
-      , delay_cycles ))
+    List.map
+      translations
+      ~f:
+        (fun
+          { mode; asid; priv; fetch_priv; access_type; vpn; page_offset; delay_cycles } ->
+        let effective_priv =
+          match access_type with
+          | Mmu.Translate.Access_type.Cases.Instruction -> fetch_priv
+          | Load | Store -> priv
+        in
+        let expected_mode =
+          match mode with
+          | Mmu.State.Translation_mode.Cases.Sv32 when effective_priv land 2 <> 0 ->
+            Mmu.State.Translation_mode.Cases.Bare
+          | mode -> mode
+        in
+        ( state ~root:Sample_page_table.root ~asid ~mode ~priv ~fetch_priv
+        , expected_mode
+        , access_type
+        , (vpn lsl Mmu.Iface.page_offset_width) lor page_offset
+        , delay_cycles ))
   in
   run_test
     ~timeout:10_000

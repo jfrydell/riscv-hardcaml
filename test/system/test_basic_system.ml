@@ -4,6 +4,7 @@ open! Hardcaml
 module System = Riscv_system.System.Make (struct
     module Cpu = struct
       let caches = Riscv_system.Cpu.Cache_config.L2
+      let disable_address_translation = true
     end
   end)
 
@@ -68,7 +69,7 @@ let preload_program sim memory =
     let shift = 8 * (addr % 8) in
     Hashtbl.update words word_address ~f:(fun current ->
       let current = Option.value current ~default:0L in
-      Int64.(current lor (shift_left (of_int byte) shift))));
+      Int64.(current lor shift_left (of_int byte) shift)));
   let main_memory =
     Cyclesim.lookup_mem_by_name sim "main_memory_bram" |> Option.value_exn
   in
@@ -92,8 +93,7 @@ let run_program (sim : Sim.t) ~insn_count =
     then failwithf "system program timed out after %d cycles" 5_000 ()
     else (
       let outputs = Cyclesim.outputs sim in
-      if Bits.to_bool !(outputs.commit_pc.valid)
-      then Int.incr commits;
+      if Bits.to_bool !(outputs.commit_pc.valid) then Int.incr commits;
       Cyclesim.cycle sim;
       loop (cycles - 1))
   in

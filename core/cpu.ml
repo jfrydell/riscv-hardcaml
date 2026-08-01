@@ -17,6 +17,7 @@ module O = struct
   type 'a t =
     { to_l1i : 'a Memory.L1i_cache.From_pipe.t
     ; to_l1d : 'a Memory.L1d_cache.From_pipe.t
+    ; csrs : 'a Privileged.Csrs.t (** Current CSR values. *)
     ; commit_pc : 'a With_valid.t [@bits 32]
     (** The PC of the instruction committing this cycle, when valid. *)
     }
@@ -352,7 +353,7 @@ let create scope (i : _ I.t) =
   With_valid.iter2 ~f:( <-- ) trap_pc trap.handler_pc;
   Privileged.Csrs.Of_signal.assign csrs trap.csrs;
   let%hw commit_valid = is_insn W &&: ~:(stall W) in
-  O.{ to_l1i; to_l1d; commit_pc = { valid = commit_valid; value = pc W } }
+  O.{ to_l1i; to_l1d; csrs; commit_pc = { valid = commit_valid; value = pc W } }
 ;;
 
 let hierarchical =

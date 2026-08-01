@@ -7,6 +7,7 @@ module Interrupt_system = struct
   module System = Riscv_system.System.Make (struct
       module Cpu = struct
         let caches = Riscv_system.Cpu.Cache_config.L1s
+        let disable_address_translation = true
       end
     end)
 
@@ -39,7 +40,9 @@ module Interrupt_system = struct
       Signal.(led_port.read_value <-- led_value);
       let button_port = System.attach_mmio_register ~addr:0x80000004 system in
       let button_seen =
-        Types.Clocking.reg clocking ~enable:button_port.write.valid
+        Types.Clocking.reg
+          clocking
+          ~enable:button_port.write.valid
           (Signal.lsb button_port.write.value)
       in
       Signal.(button_port.read_value <-- uresize ~width:32 button);
@@ -385,7 +388,7 @@ let preload_system_program sim memory =
     let shift = 8 * (addr % 8) in
     Hashtbl.update words word_address ~f:(fun current ->
       let current = Option.value current ~default:0L in
-      Int64.(current lor (shift_left (of_int byte) shift))));
+      Int64.(current lor shift_left (of_int byte) shift)));
   let main_memory =
     match Cyclesim.lookup_mem_by_name sim "main_memory_bram" with
     | Some memory -> memory
@@ -394,8 +397,8 @@ let preload_system_program sim memory =
         (Cyclesim.traced sim).internal_signals
         |> List.concat_map ~f:(fun signal -> signal.mangled_names)
         |> List.filter ~f:(fun name ->
-             String.is_substring name ~substring:"main"
-             || String.is_substring name ~substring:"bram")
+          String.is_substring name ~substring:"main"
+          || String.is_substring name ~substring:"bram")
       in
       raise_s [%message "Could not find test BRAM" (names : string list)]
   in
@@ -490,9 +493,9 @@ let run_mmio_interrupt_scenario { initial_button; delays } =
     let current_output = output () in
     let complete =
       !event_index = List.length delays
-      && not !waiting_for_ack
+      && (not !waiting_for_ack)
       && Option.value_map !resume_at ~default:true ~f:(fun minimum ->
-           Int32.to_int_exn current_regs.(10) >= minimum)
+        Int32.to_int_exn current_regs.(10) >= minimum)
     in
     if complete
     then ()
@@ -512,9 +515,8 @@ let run_mmio_interrupt_scenario { initial_button; delays } =
       if (not !started) && Int32.(current_regs.(10) > zero) then started := true;
       if !waiting_for_ack
       then (
-        if
-          Bool.equal (Bits.to_bool !(current_output.button_seen)) !button
-          && Int32.to_int_exn current_regs.(24) > !last_handler_count
+        if Bool.equal (Bits.to_bool !(current_output.button_seen)) !button
+           && Int32.to_int_exn current_regs.(24) > !last_handler_count
         then (
           waiting_for_ack := false;
           resume_at := Some (Int32.to_int_exn current_regs.(10) + 3);
@@ -524,14 +526,16 @@ let run_mmio_interrupt_scenario { initial_button; delays } =
             countdown := List.hd_exn delays)
           else (
             Int.incr event_index;
-            Option.iter (List.nth delays !event_index) ~f:(fun delay -> countdown := delay))))
+            Option.iter (List.nth delays !event_index) ~f:(fun delay ->
+              countdown := delay))))
       else if !started && !event_index < List.length delays
-      then if !countdown = 0
-      then (
-        button := not !button;
-        waiting_for_ack := true;
-        last_handler_count := Int32.to_int_exn current_regs.(24))
-      else Int.decr countdown;
+      then
+        if !countdown = 0
+        then (
+          button := not !button;
+          waiting_for_ack := true;
+          last_handler_count := Int32.to_int_exn current_regs.(24))
+        else Int.decr countdown;
       inputs.button := Bits.of_bool !button;
       Cyclesim.cycle sim;
       loop (cycles - 1))
@@ -597,13 +601,9 @@ let () =
     interrupt_scenario_generator
     ~f:run_supervisor_interrupt_scenario;
   run_mmio_interrupt_scenario
-    { initial_button = false
-    ; delays = List.init 96 ~f:(fun index -> index mod 32)
-    };
+    { initial_button = false; delays = List.init 96 ~f:(fun index -> index mod 32) };
   run_mmio_interrupt_scenario
-    { initial_button = true
-    ; delays = List.init 96 ~f:(fun index -> index mod 32)
-    };
+    { initial_button = true; delays = List.init 96 ~f:(fun index -> index mod 32) };
   Quickcheck.test
     ~seed:(`Deterministic "mmio-interrupt-ack-timing-fuzz")
     ~trials:8

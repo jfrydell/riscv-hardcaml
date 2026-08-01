@@ -10,6 +10,7 @@ type 'a t =
   ; scause : 'a [@bits 32]
   ; stval : 'a [@bits 32]
   ; sip : 'a [@bits 32] (** Restricted view of [mip]. *)
+  ; satp : 'a [@bits 32]
   ; mstatus : 'a [@bits 32]
   ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
   ; medeleg : 'a [@bits 32]
@@ -39,6 +40,7 @@ let addresses =
   ; scause = 0x142
   ; stval = 0x143
   ; sip = 0x144
+  ; satp = 0x180
   ; mstatus = 0x300
   ; mstatush = 0x310
   ; medeleg = 0x302

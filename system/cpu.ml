@@ -12,6 +12,10 @@ end
 
 module type Config = sig
   val caches : Cache_config.t
+
+  (** When set, disables address translation, forcing Bare mode. (TODO: reflect in CSR
+      behavior) *)
+  val disable_address_translation : bool
 end
 
 module Make (Config : Config) = struct
@@ -33,14 +37,6 @@ module Make (Config : Config) = struct
   end
 
   let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) =
-    let mmu_state =
-      { Mmu.State.translation_mode =
-          Mmu.State.Translation_mode.Binary.Of_signal.of_enum
-            Mmu.State.Translation_mode.Cases.Bare_debug
-      ; asid = Signal.zero Mmu.State.asid_width
-      ; page_table_root = Signal.zero Mmu.State.addr_width
-      }
-    in
     (* Instantiate core, with wires for L1 cache outputs. *)
     let%hw.Memory.L1d_cache.To_pipe.Of_signal core_from_l1d =
       Memory.L1d_cache.To_pipe.Of_signal.wires ()
@@ -56,6 +52,15 @@ module Make (Config : Config) = struct
         ; from_l1i = core_from_l1i
         ; request_interrupt
         }
+    in
+    let mmu_state =
+      let mmu_state = Mmu.State.of_csrs core.csrs in
+      { mmu_state with
+        translation_mode =
+          (if Config.disable_address_translation
+           then Mmu.State.Translation_mode.Binary.Of_signal.of_enum Bare
+           else mmu_state.translation_mode)
+      }
     in
     (* Instantiate L1 I-cache. *)
     let%hw.Memory.Bus.From_mem.Of_signal l1i_cache_from_mem =

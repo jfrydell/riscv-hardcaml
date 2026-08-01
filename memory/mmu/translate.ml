@@ -14,6 +14,17 @@ module Access_type = struct
   end
 
   include Enum.Make_binary (Cases)
+
+  (** Privilege level to use for address translation. Translation mode only applies to S
+      and U (01 and 00). *)
+  let effective_priv ~(state : _ State.t) access =
+    Of_signal.match_
+      access
+      [ Instruction, state.fetch_priv
+      ; Load, state.load_store_priv
+      ; Store, state.load_store_priv
+      ]
+  ;;
 end
 
 module I = struct
@@ -115,11 +126,12 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
   let%hw stall = tlb_out.result.stall ||: bare_translation.stall in
   (* Change request routing only when not stalled to avoid having two requests
      in-flight at once. *)
+  let%hw translating_unlatched =
+    State.Translation_mode.Binary.Of_signal.is state.translation_mode Sv32
+    &&: ~:(Access_type.effective_priv ~state access_type).:(1)
+  in
   translating
-  <-- Types.Clocking.cut_through_reg
-        ~enable:~:stall
-        clocking
-        (State.Translation_mode.Binary.Of_signal.is state.translation_mode Sv32);
+  <-- Types.Clocking.cut_through_reg ~enable:~:stall clocking translating_unlatched;
   (* While [translating] changes as soon as we aren't stalled, so a new request is
      routed correctly, the output still comes from the previously-selected
      module until we actually get a new valid request. *)

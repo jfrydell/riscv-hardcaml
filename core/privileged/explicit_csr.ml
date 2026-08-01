@@ -96,6 +96,7 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
     ; scause = all_legal
     ; stval = all_legal
     ; sip = unchanged
+    ; satp = all_legal
     ; mstatus = legalize_mstatus
     ; mstatush = (fun ~old_value:_ ~new_value:_ -> zero 32)
     ; medeleg = (fun ~old_value:_ ~new_value -> new_value &: medeleg_mask)
