@@ -3,20 +3,19 @@ open! Hardcaml
 open Signal
 
 module type Config = sig
-  (** Number of 64-bit words in the memory. *)
-  val size : int
+  (** Number of bytes in memory. *)
+  val capacity : int
 end
 
 module Make (Config : Config) = struct
-  let size = Config.size
-
   include Cache_common.Make (struct
-      let num_sets = size * Memory_bus.cpu_bus_width / Memory_bus.block_size_bits
+      let num_sets = Config.capacity * 8 / Memory_bus.block_size_bits
     end)
 
   let () =
-    if size < 2
-    then raise_s [%message "main memory must contain at least two words" (size : int)]
+    if num_words < 2
+    then
+      raise_s [%message "main memory must contain at least two words" (num_words : int)]
   ;;
 
   let word_base_addr addr =
@@ -99,7 +98,7 @@ module Make (Config : Config) = struct
     let data_mem =
       Ram.create
         ~collision_mode:Write_before_read
-        ~size
+        ~size:num_words
         ~write_ports:
           [| { write_clock = clocking.clock
              ; write_enable = data_write_enable

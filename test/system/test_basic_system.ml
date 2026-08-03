@@ -58,25 +58,6 @@ let program =
     ]
 ;;
 
-let preload_program sim memory =
-  Hashtbl.iter_keys memory ~f:(fun addr ->
-    if Int32.(addr < zero || addr >= of_int_exn 0x8000)
-    then failwithf "program address outside BRAM: 0x%lx" addr ());
-  let words = Int.Table.create () in
-  Hashtbl.iteri memory ~f:(fun ~key:addr ~data:byte ->
-    let addr = Int32.to_int_exn addr in
-    let word_address = addr / 8 in
-    let shift = 8 * (addr % 8) in
-    Hashtbl.update words word_address ~f:(fun current ->
-      let current = Option.value current ~default:0L in
-      Int64.(current lor shift_left (of_int byte) shift)));
-  let main_memory =
-    Cyclesim.lookup_mem_by_name sim "main_memory_bram" |> Option.value_exn
-  in
-  Hashtbl.iteri words ~f:(fun ~key:address ~data ->
-    Cyclesim.Memory.of_bits main_memory ~address (Bits.of_int64_trunc ~width:64 data))
-;;
-
 let read_registers sim =
   Cyclesim.lookup_mem_by_name sim "regfile"
   |> Option.value_exn
@@ -109,7 +90,7 @@ let%test_unit "system routes BRAM and MMIO accesses" =
   Cyclesim.cycle sim;
   inputs.clocking.clear := Bits.gnd;
   let memory = Riscvemulate.init ~insns:program ~addr:Int32.zero |> Riscvemulate.memory in
-  preload_program sim memory;
+  System_test_utils.preload_program sim memory;
   run_program sim ~insn_count:(List.length program);
   let registers = read_registers sim in
   let outputs = Cyclesim.outputs sim in

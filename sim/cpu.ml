@@ -238,11 +238,11 @@ let cycle_external { sim; backing_memory; fill_addr; writeback_stall_counter; _ 
 ;;
 
 (** Runs simulation until the next instruction commits, throwing an exception if this
-    doesn't occur within 100 cycles. Runs the given function prior to each cycle (for
+    doesn't occur within 200 cycles. Runs the given function prior to each cycle (for
     example, to inject instructions at PC for hacky testing). *)
 let cycle_insn ?(cycle_fn = fun _ -> ()) t =
   match
-    List.range 0 100
+    List.range 0 200
     |> List.find ~f:(fun _ ->
       cycle_fn ();
       let committed = Bits.to_bool !((Cyclesim.outputs t.sim).commit_pc.valid) in
@@ -251,7 +251,7 @@ let cycle_insn ?(cycle_fn = fun _ -> ()) t =
       committed)
   with
   | Some _cycle -> ()
-  | None -> failwith "CPU didn't report instruction commit for 100 cycles"
+  | None -> failwith "CPU didn't report instruction commit for 200 cycles"
 ;;
 
 (* Flushes any instructions still in the CPU without updating state *)

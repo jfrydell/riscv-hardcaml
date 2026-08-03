@@ -144,8 +144,7 @@ module Make (Config : Config) = struct
   let attach_bram_memory ~size_bytes t =
     let module M =
       Memory.Main_memory_bram.Make (struct
-        let bytes_per_word = Memory.Bus.cpu_bus_width / 8
-        let size = Int.round_up ~to_multiple_of:bytes_per_word size_bytes / bytes_per_word
+        let capacity = size_bytes
       end)
     in
     let port = add_access_handler ~addr_pred:(fun a -> Signal.(a <:. size_bytes)) t in

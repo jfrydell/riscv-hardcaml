@@ -37,9 +37,7 @@ end
 let create scope ({ clocking; from_bus; read_value } : _ I.t) =
   let write_request = from_bus.valid &&: from_bus.access_type.write_through in
   let write =
-    { With_valid.valid = write_request
-    ; value = sel_bottom ~width:32 from_bus.data
-    }
+    { With_valid.valid = write_request; value = sel_bottom ~width:32 from_bus.data }
   in
   let read_request = from_bus.valid &&: from_bus.access_type.read_word in
   let read_response = Types.Clocking.reg clocking read_request in
@@ -48,7 +46,7 @@ let create scope ({ clocking; from_bus; read_value } : _ I.t) =
   let%hw.Memory.Bus.From_mem.Of_signal to_bus =
     { valid = read_response
     ; addr = read_addr
-    ; data = zero 32 @: read_data
+    ; data = uresize ~width:Memory.Bus.cpu_bus_width read_data
     ; last = read_response
     ; ready = vdd
     }

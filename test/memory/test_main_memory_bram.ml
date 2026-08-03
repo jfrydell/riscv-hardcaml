@@ -2,7 +2,7 @@ open! Core
 open! Hardcaml
 
 module Main_memory = Memory.Main_memory_bram.Make (struct
-    let size = 8192
+    let capacity = 65536
   end)
 
 module Dut = struct

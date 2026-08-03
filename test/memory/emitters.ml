@@ -26,9 +26,7 @@ let address_generator ?(size = 0) ?(max_set = 0) ?(io_accesses = false) () =
     if io_accesses
     then
       Quickcheck.Generator.weighted_union
-        [ 3., Quickcheck.Generator.return false
-        ; 1., Quickcheck.Generator.return true
-        ]
+        [ 3., Quickcheck.Generator.return false; 1., Quickcheck.Generator.return true ]
     else Quickcheck.Generator.return false
   in
   let%map byte_offset =
@@ -112,9 +110,7 @@ module Event = struct
       ]
   ;;
 
-  let read_block_generator ~max_set =
-    read_generator ~max_set ~io_accesses:false
-  ;;
+  let read_block_generator ~max_set = read_generator ~max_set ~io_accesses:false
 
   let write_through_generator ~max_set ~io_accesses =
     let open Quickcheck.Generator.Let_syntax in
@@ -122,9 +118,8 @@ module Event = struct
       [ ( 3.
         , let%bind size = Int.gen_incl 0 2
           and data =
-            Quickcheck.Generator.map
-              (Int64.gen_uniform_incl Int64.min_value Int64.max_value)
-              ~f:(Bits.of_signed_int64 ~width:Memory.Bus.cpu_bus_width)
+            List.gen_with_length Memory.Bus.cpu_bus_width (Int.gen_incl 0 1)
+            |> Quickcheck.Generator.map ~f:Bits.of_bit_list
           in
           let%map addr = address_generator ~size ~max_set ~io_accesses () in
           Write_through { addr; data; size } )
@@ -301,11 +296,7 @@ let update_model_for_write model_mem = function
         ~data:
           (apply_write_through_store ~original ~addr ~store_data:data ~store_size:size))
   | Event.Write_back { addr; data; _ } ->
-    Option.iter model_mem ~f:(fun mem ->
-      Hashtbl.set
-        mem
-        ~key:(word_base_addr addr)
-        ~data)
+    Option.iter model_mem ~f:(fun mem -> Hashtbl.set mem ~key:(word_base_addr addr) ~data)
   | Read_block _ | Read_word _ | Delay _ -> ()
 ;;
 

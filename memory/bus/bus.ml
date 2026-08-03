@@ -3,7 +3,7 @@ open! Hardcaml
 open Signal
 
 let addr_width = 32
-let cpu_bus_width = 64
+let cpu_bus_width = 32
 let block_size_bits = 256
 
 (** The operation performed by a unified memory-bus request. Exactly one field should be
