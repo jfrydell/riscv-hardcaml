@@ -27,7 +27,7 @@ end
 open Hardcaml_test_harness.Step_harness.Functional.Make_monadic (Dut.I) (Dut.O)
 
 let run = run ~create:Dut.create
-let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.cpu_bus_width hex
+let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.data_width hex
 
 let with_memories ?(backing_mem = Int.Table.create ()) () =
   Hashtbl.copy backing_mem, Hashtbl.copy backing_mem

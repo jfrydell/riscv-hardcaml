@@ -3,25 +3,25 @@ open! Hardcaml
 open Signal
 
 let addr_width = Memory_bus.addr_width
-let bus_width = Memory_bus.cpu_bus_width
+let data_width = Memory_bus.data_width
 let block_size_bits = Memory_bus.block_size_bits
 
 (* Match the current L1 D-cache geometry. *)
 let num_sets = 512
-let bits_block_offset = address_bits_for (block_size_bits / 8)
-let bits_index = address_bits_for num_sets
-let bits_tag = addr_width - bits_block_offset - bits_index
-let num_words = num_sets * (block_size_bits / bus_width)
+let bits_byte_in_block = address_bits_for (block_size_bits / 8)
+let bits_set_index = address_bits_for num_sets
+let bits_tag = addr_width - bits_byte_in_block - bits_set_index
+let num_words = num_sets * (block_size_bits / data_width)
 let bits_word_index = address_bits_for num_words
-let bits_word_offset = address_bits_for (bus_width / 8)
+let bits_byte_in_word = address_bits_for (data_width / 8)
 let extract_tag addr = sel_top ~width:bits_tag addr
 
-let extract_index addr =
-  drop_bottom ~width:bits_block_offset addr |> sel_bottom ~width:bits_index
+let extract_set_index addr =
+  drop_bottom ~width:bits_byte_in_block addr |> sel_bottom ~width:bits_set_index
 ;;
 
 let extract_word addr =
-  drop_bottom ~width:bits_word_offset addr |> sel_bottom ~width:bits_word_index
+  drop_bottom ~width:bits_byte_in_word addr |> sel_bottom ~width:bits_word_index
 ;;
 
 let insn_from_word ~word ~word_offset =
@@ -105,14 +105,14 @@ let create
         ~write_ports:
           [| { write_clock = clocking.clock
              ; write_enable = update_tag
-             ; write_address = extract_index active_pa
+             ; write_address = extract_set_index active_pa
              ; write_data = Metadata.Of_signal.pack { tag = active_tag; valid = vdd }
              }
           |]
         ~read_ports:
           [| { read_clock = clocking.clock
              ; read_enable = vdd
-             ; read_address = extract_index next_pc
+             ; read_address = extract_set_index next_pc
              }
           |]
         ~name:"tags"
@@ -146,7 +146,7 @@ let create
       ()
   in
   let%hw loaded_word = data_mem.(0) in
-  let%hw word_offset = sel_bottom ~width:bits_word_offset active_pa in
+  let%hw word_offset = sel_bottom ~width:bits_byte_in_word active_pa in
   let%hw insn_value = insn_from_word ~word:loaded_word ~word_offset in
   update_tag <-- (miss &&: cache_from_mem.valid &&: cache_from_mem.last);
   ({ cache_to_mem =
@@ -154,7 +154,7 @@ let create
        ; uncacheable = gnd
        ; access_type = Memory_bus.Access_type.read_block
        ; addr = active_pa
-       ; data = zero bus_width
+       ; data = zero data_width
        ; size = zero 2
        ; last = gnd
        }

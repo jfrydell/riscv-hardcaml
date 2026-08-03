@@ -46,7 +46,7 @@ let create scope ({ clocking; from_bus; read_value } : _ I.t) =
   let%hw.Memory.Bus.From_mem.Of_signal to_bus =
     { valid = read_response
     ; addr = read_addr
-    ; data = uresize ~width:Memory.Bus.cpu_bus_width read_data
+    ; data = uresize ~width:Memory.Bus.data_width read_data
     ; last = read_response
     ; ready = vdd
     }

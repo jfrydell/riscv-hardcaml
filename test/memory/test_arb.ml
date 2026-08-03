@@ -86,7 +86,7 @@ let with_memories ?(backing_mem = Int.Table.create ()) () =
   Hashtbl.copy backing_mem, Hashtbl.copy backing_mem
 ;;
 
-let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.cpu_bus_width hex
+let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.data_width hex
 
 let testbench ~mem ~model_mem ~events0 ~events1 ~events2 _ =
   let%bind.Step () = spawn_handler ~mem in

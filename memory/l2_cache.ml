@@ -42,7 +42,7 @@ module Writeback = struct
           lowered, unless another access is ready for streaming (impossible without
           pipelining tag lookups). *)
       ; base_addr : 'a [@bits addr_width]
-      ; data_in : 'a [@bits bus_width]
+      ; data_in : 'a [@bits data_width]
       ; dirty_in : 'a
       ; ready : 'a
       }
@@ -68,7 +68,7 @@ module Writeback = struct
     <-- mux2 (active &&: word_done) (prev_read_word_number +:. 1) prev_read_word_number;
     outputting_last <-- (prev_read_word_number ==: ones bits_word_in_block);
     let%hw read_addr = base_addr +: word_offset_addr read_word_number in
-    ({ read_addr = base_addr +: word_offset_addr read_word_number
+    ({ read_addr
      ; to_mem =
          (* All these outputs go one cycle after read. *)
          { valid = dirty_in &: active
@@ -99,10 +99,10 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
     ; read_block = from_l1.valid &&: from_l1.access_type.read_block
     ; write_through = from_l1.valid &&: from_l1.access_type.write_through
     ; write_back = gnd
-    ; store_data = sel_bottom ~width:bus_width from_l1.data
+    ; store_data = sel_bottom ~width:data_width from_l1.data
     ; store_size = from_l1.size
     ; tag = extract_tag from_l1.addr
-    ; index = extract_index from_l1.addr
+    ; index = extract_set_index from_l1.addr
     }
   in
   let%hw.Active_access.Of_signal active_access = Active_access.Of_signal.wires () in
@@ -141,11 +141,11 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
      coming from [active_acess] (not [next_access]). So this data isn't valid
      until a cycle after [load_hit], [store_hit], or [writing_back] triggers
      the data read. *)
-  let%hw loaded_word = wire bus_width in
+  let%hw loaded_word = wire data_width in
   let%hw loaded_dirty = wire 1 in
   (* Write back any dirty words of valid but not matching block. *)
   let%hw eviction_base_addr =
-    read_metadata.tag @: active_access.index @: zero bits_block_offset
+    read_metadata.tag @: active_access.index @: zero bits_byte_in_block
   in
   let%hw writeback_done = wire 1 in
   let writeback =
@@ -225,7 +225,7 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
       ~read_ports:
         [| { read_clock = clocking.clock
            ; read_enable = vdd
-           ; read_address = extract_index next_access.addr
+           ; read_address = extract_set_index next_access.addr
            }
         |]
       ~name:"l2_tags"
@@ -281,7 +281,7 @@ let create scope ({ clocking; from_l1; from_mem } : _ I.t) =
     ; uncacheable = gnd
     ; access_type = Memory_bus.Access_type.read_block
     ; addr = active_access.addr
-    ; data = zero bus_width
+    ; data = zero data_width
     ; size = zero 2
     ; last = gnd
     }

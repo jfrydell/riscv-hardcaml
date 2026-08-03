@@ -6,35 +6,35 @@ open! Hardcaml
 open Signal
 
 let addr_width = Memory_bus.addr_width
-let bus_width = Memory_bus.cpu_bus_width
+let data_width = Memory_bus.data_width
 let block_size_bits = Memory_bus.block_size_bits
 
 (* 512 * 32B blocks = 131 KB L1 cache. *)
 let num_sets = 512
-let bits_block_offset = address_bits_for (block_size_bits / 8)
-let bits_index = address_bits_for num_sets
-let bits_tag = addr_width - bits_block_offset - bits_index
+let bits_byte_in_block = address_bits_for (block_size_bits / 8)
+let bits_set_index = address_bits_for num_sets
+let bits_tag = addr_width - bits_byte_in_block - bits_set_index
 
 (* Data is stored per-word. *)
-let num_words = num_sets * (block_size_bits / bus_width)
+let num_words = num_sets * (block_size_bits / data_width)
 let bits_word_index = address_bits_for num_words
-let bits_word_offset = address_bits_for (bus_width / 8)
+let bits_byte_in_word = address_bits_for (data_width / 8)
 
 (* Accessors *)
 let extract_tag addr = sel_top ~width:bits_tag addr
 
-let extract_index addr =
-  drop_bottom ~width:bits_block_offset addr |> sel_bottom ~width:bits_index
+let extract_set_index addr =
+  drop_bottom ~width:bits_byte_in_block addr |> sel_bottom ~width:bits_set_index
 ;;
 
 let extract_word addr =
-  drop_bottom ~width:bits_word_offset addr |> sel_bottom ~width:bits_word_index
+  drop_bottom ~width:bits_byte_in_word addr |> sel_bottom ~width:bits_word_index
 ;;
 
 (** Convert an aligned store to a bus-width list of bytes with data masks. Little endian. *)
 let store_to_bytes ~word_offset ~size ~data =
   let rep_data ~width =
-    List.init (bus_width / width) ~f:(fun _ -> sel_bottom ~width data) |> concat_lsb
+    List.init (data_width / width) ~f:(fun _ -> sel_bottom ~width data) |> concat_lsb
   in
   let data =
     mux size [ rep_data ~width:8; rep_data ~width:16; rep_data ~width:32 ]
@@ -44,7 +44,7 @@ let store_to_bytes ~word_offset ~size ~data =
     [ "0001"; "0011"; "1111" ]
     |> List.map ~f:of_bit_string
     |> mux size
-    |> uresize ~width:(bus_width / 8)
+    |> uresize ~width:(data_width / 8)
     |> log_shift ~f:sll ~by:word_offset
     |> split_lsb ~part_width:1
   in
@@ -185,14 +185,14 @@ let create
         ~write_ports:
           [| { write_clock = clocking.clock
              ; write_enable = update_tag
-             ; write_address = extract_index active_access.addr
+             ; write_address = extract_set_index active_access.addr
              ; write_data = Metadata.Of_signal.pack { tag = active_tag; valid = vdd }
              }
           |]
         ~read_ports:
           [| { read_clock = clocking.clock
              ; read_enable = vdd
-             ; read_address = extract_index next_access.addr
+             ; read_address = extract_set_index next_access.addr
              }
           |]
         ~name:"tags"
@@ -203,12 +203,12 @@ let create
   let%hw tag_match = read_metadata.valid &&: (active_tag ==: read_metadata.tag) in
   load_fill <-- (active_access.load &&: ~:tag_match &&: ~:(translation.result.io));
   (* Loads extract and extend data from a word loaded from memory. *)
-  let%hw word_offset = sel_bottom ~width:bits_word_offset active_access.addr in
-  let%hw loaded_word = wire bus_width in
+  let%hw word_offset = sel_bottom ~width:bits_byte_in_word active_access.addr in
+  let%hw loaded_word = wire data_width in
   let%hw load_data_ext =
     load_data_from_word
       ~word:cache_from_mem.data
-      ~word_offset:(zero bits_word_offset)
+      ~word_offset:(zero bits_byte_in_word)
       ~sign_extend:active_access.sign_extend
       ~size:active_access.size
   in
@@ -273,7 +273,7 @@ let create
     ; uncacheable = translation.result.io
     ; access_type = Memory_bus.Access_type.write_through
     ; addr = active_access.addr
-    ; data = uresize ~width:bus_width active_access.store_data
+    ; data = uresize ~width:data_width active_access.store_data
     ; size = active_access.size
     ; last = vdd
     }
@@ -287,7 +287,7 @@ let create
           Memory_bus.Access_type.read_word
           Memory_bus.Access_type.read_block
     ; addr = active_access.addr
-    ; data = zero bus_width
+    ; data = zero data_width
     ; size = active_access.size
     ; last = gnd
     }

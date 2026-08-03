@@ -8,7 +8,7 @@ let preload_program sim memory =
   let words = Int.Table.create () in
   Hashtbl.iteri memory ~f:(fun ~key:addr ~data:byte ->
     let addr = Int32.to_int_exn addr in
-    let bytes_per_word = Memory.Bus.cpu_bus_width / 8 in
+    let bytes_per_word = Memory.Bus.data_width / 8 in
     let word_address = addr / bytes_per_word in
     let shift = 8 * (addr % bytes_per_word) in
     Hashtbl.update words word_address ~f:(fun current ->
@@ -31,5 +31,5 @@ let preload_program sim memory =
     Cyclesim.Memory.of_bits
       main_memory
       ~address
-      (Bits.of_int64_trunc ~width:Memory.Bus.cpu_bus_width data))
+      (Bits.of_int64_trunc ~width:Memory.Bus.data_width data))
 ;;

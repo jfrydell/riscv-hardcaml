@@ -28,7 +28,7 @@ let find_l2_cache_state sim =
 
 let write_word_to_memory ~memory ~addr bits =
   let data = Bits.to_int64_trunc bits in
-  for byte = 0 to (Memory.Bus.cpu_bus_width / 8) - 1 do
+  for byte = 0 to (Memory.Bus.data_width / 8) - 1 do
     let shift = 8 * byte in
     let value = Int64.(to_int_exn ((data lsr shift) land 0xffL)) in
     Hashtbl.set memory ~key:Int32.(addr + of_int_exn byte) ~data:value
@@ -41,10 +41,10 @@ let effective_memory ~backing_memory ~l2_cache_state =
     let tags = Cyclesim.Memory.read_all tags
     and data = Cyclesim.Memory.read_all data
     and dirty = Cyclesim.Memory.read_all dirty in
-    let bits_block_offset = Memory.L2_cache.bits_block_offset
-    and bits_index = Memory.L2_cache.bits_index
+    let bits_byte_in_block = Memory.L2_cache.bits_byte_in_block
+    and bits_set_index = Memory.L2_cache.bits_set_index
     and words_per_block = Memory.L2_cache.words_per_block
-    and bits_word_offset = Memory.L2_cache.bits_word_offset in
+    and bits_byte_in_word = Memory.L2_cache.bits_byte_in_word in
     Array.iteri tags ~f:(fun index metadata ->
       if Bits.to_bool (Bits.select metadata ~high:0 ~low:0)
       then (
@@ -55,10 +55,14 @@ let effective_memory ~backing_memory ~l2_cache_state =
           then (
             let addr =
               Stdlib.Int32.logor
-                (Stdlib.Int32.shift_left tag (bits_index + bits_block_offset))
+                (Stdlib.Int32.shift_left tag (bits_set_index + bits_byte_in_block))
                 (Stdlib.Int32.logor
-                   (Stdlib.Int32.shift_left (Int32.of_int_exn index) bits_block_offset)
-                   (Stdlib.Int32.shift_left (Int32.of_int_exn word) bits_word_offset))
+                   (Stdlib.Int32.shift_left
+                      (Int32.of_int_exn index)
+                      bits_byte_in_block)
+                   (Stdlib.Int32.shift_left
+                      (Int32.of_int_exn word)
+                      bits_byte_in_word))
             in
             write_word_to_memory ~memory ~addr data.(data_index))
         done)));
@@ -122,7 +126,7 @@ let process_read_request
   ~(response : _ Memory.Bus.From_mem.t)
   ~(fill_addr : int32 option ref)
   =
-  let word_incr = Memory.Bus.cpu_bus_width / 8 |> Int32.of_int_exn in
+  let word_incr = Memory.Bus.data_width / 8 |> Int32.of_int_exn in
   let block_mask =
     (Memory.Bus.block_size_bits / 8) - 1 |> Int32.of_int_exn |> Int32.lnot
   in
@@ -146,7 +150,7 @@ let process_read_request
             |> Bits.of_unsigned_int ~width:8
           in
           let bytes =
-            List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
+            List.init (Memory.Bus.data_width / 8) ~f:(fun n ->
               load_byte Int32.(addr + of_int_exn n))
           in
           Bits.concat_lsb bytes);
@@ -184,7 +188,7 @@ let process_read_word_request
     let addr = Bits.to_int32_trunc !(request.addr) in
     response.addr := !(request.addr);
     response.data
-    := List.init (Memory.Bus.cpu_bus_width / 8) ~f:(fun n ->
+    := List.init (Memory.Bus.data_width / 8) ~f:(fun n ->
          Hashtbl.find memory Int32.(addr + of_int_exn n)
          |> Option.value ~default:0
          |> Bits.of_unsigned_int ~width:8)

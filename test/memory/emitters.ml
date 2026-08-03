@@ -4,9 +4,9 @@ module I = Memory.Bus.To_mem
 module O = Memory.Bus.From_mem
 module Step = Hardcaml_step_testbench.Monadic.Functional.Cyclesim.Make (I) (O)
 
-let word_size_bytes = Memory.Bus.cpu_bus_width / 8
+let word_size_bytes = Memory.Bus.data_width / 8
 let block_size_bytes = Memory.Bus.block_size_bits / 8
-let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.cpu_bus_width
+let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.data_width
 let conflicting_block_stride = 512 * block_size_bytes
 let io_addr_bit = 1 lsl (Memory.Bus.addr_width - 1)
 let word_base_addr addr = addr land lnot (word_size_bytes - 1)
@@ -68,7 +68,7 @@ let read_word_from_mem mem addr =
     let word_addr = word_base_addr byte_addr in
     let word =
       Hashtbl.find mem word_addr
-      |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+      |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     let low = (byte_addr - word_addr) * 8 in
     Bits.select word ~high:(low + 7) ~low)
@@ -118,7 +118,7 @@ module Event = struct
       [ ( 3.
         , let%bind size = Int.gen_incl 0 2
           and data =
-            List.gen_with_length Memory.Bus.cpu_bus_width (Int.gen_incl 0 1)
+            List.gen_with_length Memory.Bus.data_width (Int.gen_incl 0 1)
             |> Quickcheck.Generator.map ~f:Bits.of_bit_list
           in
           let%map addr = address_generator ~size ~max_set ~io_accesses () in
@@ -141,7 +141,7 @@ module Block_values = struct
       let addr = base + (word_size_bytes * i) in
       ( addr
       , Hashtbl.find mem addr
-        |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+        |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
         |> Bits_set.singleton ))
     |> Int.Map.of_alist_exn
   ;;
@@ -167,7 +167,7 @@ let request_of_event = function
     ; access_type =
         { (Memory.Bus.Access_type.Of_bits.zero ()) with read_block = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
-    ; data = Bits.zero Memory.Bus.cpu_bus_width
+    ; data = Bits.zero Memory.Bus.data_width
     ; size = Bits.zero 2
     ; last = Bits.gnd
     }
@@ -176,7 +176,7 @@ let request_of_event = function
     ; uncacheable = Bits.vdd
     ; access_type = { (Memory.Bus.Access_type.Of_bits.zero ()) with read_word = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
-    ; data = Bits.zero Memory.Bus.cpu_bus_width
+    ; data = Bits.zero Memory.Bus.data_width
     ; size = Bits.of_unsigned_int ~width:2 size
     ; last = Bits.gnd
     }
@@ -241,7 +241,7 @@ module Expected_read = struct
       let values =
         Option.value_map
           model_mem
-          ~default:(Bits_set.singleton (Bits.zero Memory.Bus.cpu_bus_width))
+          ~default:(Bits_set.singleton (Bits.zero Memory.Bus.data_width))
           ~f:(fun mem -> Bits_set.singleton (read_word_from_mem mem addr))
       in
       Word { addr; values = ref values }
@@ -288,7 +288,7 @@ let update_model_for_write model_mem = function
       let word_addr = word_base_addr addr in
       let original =
         Hashtbl.find mem word_addr
-        |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+        |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
       in
       Hashtbl.set
         mem

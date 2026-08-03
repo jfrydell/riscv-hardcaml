@@ -9,34 +9,33 @@ end
 module Make (Config : Config) = struct
   let num_sets = Config.num_sets
   let addr_width = Memory_bus.addr_width
-  let bus_width = Memory_bus.cpu_bus_width
+  let data_width = Memory_bus.data_width
 
-  (* TODO: consistent naming *)
   let block_size_bits = Memory_bus.block_size_bits
-  let bits_block_offset = address_bits_for (block_size_bits / 8)
-  let words_per_block = block_size_bits / bus_width
-  let bits_index = address_bits_for num_sets
-  let bits_tag = addr_width - bits_block_offset - bits_index
+  let bits_byte_in_block = address_bits_for (block_size_bits / 8)
+  let words_per_block = block_size_bits / data_width
+  let bits_set_index = address_bits_for num_sets
+  let bits_tag = addr_width - bits_byte_in_block - bits_set_index
   let num_words = num_sets * words_per_block
-  let bits_word_address = address_bits_for num_words
-  let bits_word_offset = address_bits_for (bus_width / 8)
+  let bits_word_index = address_bits_for num_words
+  let bits_byte_in_word = address_bits_for (data_width / 8)
   let bits_word_in_block = address_bits_for words_per_block
   let extract_tag addr = sel_top ~width:bits_tag addr
 
-  let extract_index addr =
-    drop_bottom ~width:bits_block_offset addr |> sel_bottom ~width:bits_index
+  let extract_set_index addr =
+    drop_bottom ~width:bits_byte_in_block addr |> sel_bottom ~width:bits_set_index
   ;;
 
   let extract_word_index addr =
-    drop_bottom ~width:bits_word_offset addr |> sel_bottom ~width:bits_word_address
+    drop_bottom ~width:bits_byte_in_word addr |> sel_bottom ~width:bits_word_index
   ;;
 
   let block_base_addr addr =
-    drop_bottom ~width:bits_block_offset addr @: zero bits_block_offset
+    drop_bottom ~width:bits_byte_in_block addr @: zero bits_byte_in_block
   ;;
 
   let word_offset_addr word =
-    uresize ~width:(addr_width - bits_word_offset) word @: zero bits_word_offset
+    uresize ~width:(addr_width - bits_byte_in_word) word @: zero bits_byte_in_word
   ;;
 
   module Active_access = struct
@@ -48,10 +47,10 @@ module Make (Config : Config) = struct
       ; read_block : 'a
       ; write_through : 'a
       ; write_back : 'a
-      ; store_data : 'a [@bits bus_width]
+      ; store_data : 'a [@bits data_width]
       ; store_size : 'a [@bits 2]
       ; tag : 'a [@bits bits_tag]
-      ; index : 'a [@bits bits_index]
+      ; index : 'a [@bits bits_set_index]
       }
     [@@deriving hardcaml]
   end
@@ -65,17 +64,17 @@ module Make (Config : Config) = struct
 
     type 'a t =
       { addr : 'a [@bits addr_width]
-      ; bytes : 'a Byte_valid.t list [@length bus_width / 8]
+      ; bytes : 'a Byte_valid.t list [@length data_width / 8]
       ; valid : 'a (** Signals that the write should be performed to memory. *)
       }
     [@@deriving hardcaml]
 
     let of_active ~valid (active : _ Active_access.t) =
       let word_offset =
-        sel_bottom ~width:(address_bits_for (bus_width / 8)) active.addr
+        sel_bottom ~width:(address_bits_for (data_width / 8)) active.addr
       in
       let rep_data ~width =
-        List.init (bus_width / width) ~f:(fun _ -> sel_bottom ~width active.store_data)
+        List.init (data_width / width) ~f:(fun _ -> sel_bottom ~width active.store_data)
         |> concat_lsb
       in
       let data =
@@ -88,7 +87,7 @@ module Make (Config : Config) = struct
         [ "0001"; "0011"; "1111" ]
         |> List.map ~f:of_bit_string
         |> mux active.store_size
-        |> uresize ~width:(bus_width / 8)
+        |> uresize ~width:(data_width / 8)
         |> log_shift ~f:sll ~by:word_offset
         |> split_lsb ~part_width:1
       in
@@ -108,7 +107,7 @@ module Make (Config : Config) = struct
         { clocking : 'a Types.Clocking.t
         ; start : 'a (** Start streaming data out from [base_addr]. *)
         ; base_addr : 'a [@bits addr_width]
-        ; data_in : 'a [@bits bus_width]
+        ; data_in : 'a [@bits data_width]
         }
       [@@deriving hardcaml]
     end
@@ -146,8 +145,8 @@ module Make (Config : Config) = struct
       reading_last <-- (read_word_number ==: ones bits_word_in_block);
       let%hw read_addr =
         base_addr
-        +: (uresize ~width:(addr_width - bits_word_offset) read_word_number
-            @: zero bits_word_offset)
+        +: (uresize ~width:(addr_width - bits_byte_in_word) read_word_number
+            @: zero bits_byte_in_word)
       in
       let%hw valid = Types.Clocking.reg clocking do_read in
       let%hw last = Types.Clocking.reg clocking reading_last in

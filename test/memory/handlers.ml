@@ -4,9 +4,9 @@ module I = Memory.Bus.From_mem
 module O = Memory.Bus.To_mem
 module Step = Hardcaml_step_testbench.Monadic.Functional.Cyclesim.Make (I) (O)
 
-let word_size_bytes = Memory.Bus.cpu_bus_width / 8
+let word_size_bytes = Memory.Bus.data_width / 8
 let block_size_bytes = Memory.Bus.block_size_bits / 8
-let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.cpu_bus_width
+let words_per_block = Memory.Bus.block_size_bits / Memory.Bus.data_width
 let word_base_addr addr = addr land lnot (word_size_bytes - 1)
 let block_base_addr addr = addr land lnot (block_size_bytes - 1)
 let zero = I.Of_bits.zero ()
@@ -18,7 +18,7 @@ let read_word_from_mem mem addr =
     let word_addr = word_base_addr byte_addr in
     let word =
       Hashtbl.find mem word_addr
-      |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+      |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     let low = (byte_addr - word_addr) * 8 in
     Bits.select word ~high:(low + 7) ~low)
@@ -110,7 +110,7 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
       let word_addr = word_base_addr addr in
       let original =
         Hashtbl.find mem word_addr
-        |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+        |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
       in
       Hashtbl.set
         mem
@@ -133,7 +133,7 @@ let spawn ~mem ~delay_cycles ~inputs ~outputs =
         ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
         ; data =
             Hashtbl.find mem addr
-            |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+            |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
         ; last = Bits.of_bool last
         ; ready = Bits.of_bool last
         }

@@ -19,7 +19,7 @@ module Page_table_memory = struct
         let data = page_table addr in
         loop
           ~inputs:
-            { data = Bits.uresize data ~width:Memory.Bus.cpu_bus_width
+            { data = Bits.uresize data ~width:Memory.Bus.data_width
             ; addr = Bits.of_unsigned_int ~width:Mmu.Iface.addr_width addr
             ; valid = Bits.vdd
             ; last = Bits.vdd

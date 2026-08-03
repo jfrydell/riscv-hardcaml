@@ -49,7 +49,7 @@ let run_testbench testbench =
   | None -> failwith "testbench timed out"
 ;;
 
-let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.cpu_bus_width hex
+let bits_of_hex hex = Bits.of_hex ~width:Memory.Bus.data_width hex
 
 let require_mem_word mem ~addr ~expected =
   let actual = Hashtbl.find_exn mem addr in
@@ -74,11 +74,11 @@ let require_same_memory expected actual =
   List.iter keys ~f:(fun addr ->
     let expected =
       Hashtbl.find expected addr
-      |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+      |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     let actual =
       Hashtbl.find actual addr
-      |> Option.value ~default:(Bits.zero Memory.Bus.cpu_bus_width)
+      |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     if not (Bits.equal expected actual)
     then
@@ -137,7 +137,7 @@ let%test_unit "read-block emitter receives streamed block from handler" =
   let mem = Int.Table.create () in
   let model_mem = Int.Table.create () in
   let base_addr = 0x200 in
-  let word_size = Memory.Bus.cpu_bus_width / 8 in
+  let word_size = Memory.Bus.data_width / 8 in
   let words =
     [ bits_of_hex "0123456789abcdef"
     ; bits_of_hex "1111222233334444"

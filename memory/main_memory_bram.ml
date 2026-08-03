@@ -19,7 +19,7 @@ module Make (Config : Config) = struct
   ;;
 
   let word_base_addr addr =
-    drop_bottom ~width:bits_word_offset addr @: zero bits_word_offset
+    drop_bottom ~width:bits_byte_in_word addr @: zero bits_byte_in_word
   ;;
 
   module I = struct
@@ -49,11 +49,11 @@ module Make (Config : Config) = struct
       ; store_data = from_cpu.data
       ; store_size = from_cpu.size
       ; tag = zero bits_tag
-      ; index = zero bits_index
+      ; index = zero bits_set_index
       }
     in
     let%hw.Active_access.Of_signal active_access = Active_access.Of_signal.wires () in
-    let%hw loaded_word = wire bus_width in
+    let%hw loaded_word = wire data_width in
     let%hw.Read_stream.O.Of_signal read_stream =
       Read_stream.hierarchical
         ~scope
