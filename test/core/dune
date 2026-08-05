@@ -1,14 +1,14 @@
 (library
  (name test_definitions)
  (modules test_definitions)
- (libraries core riscvemulate)
+ (libraries core riscv_isa riscvemulate)
  (preprocess
   (pps ppx_jane)))
 
 (library
  (name trap_test_utils)
  (modules trap_test_utils)
- (libraries core riscvemulate sim)
+ (libraries core riscv_isa riscvemulate sim)
  (preprocess
   (pps ppx_jane)))
 
@@ -23,6 +23,7 @@
  (libraries
   core
   hardcaml
+  riscv_isa
   privileged
   riscvemulate
   sim

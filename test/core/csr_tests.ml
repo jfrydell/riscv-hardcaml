@@ -1,5 +1,6 @@
 open! Core
 open Hardcaml
+module Insn = Riscv_isa.Insn
 
 module Csr_bank_sim =
   Cyclesim.With_interface (Privileged.Csr_bank.I) (Privileged.Csr_bank.O)
@@ -8,7 +9,7 @@ let csr_address = Privileged.Csrs.addresses.custom0
 let addresses = Privileged.Csrs.addresses
 
 let program =
-  let open Riscvemulate in
+  let open Insn in
   [ Csr { op = Csrrw; rd = 1; src = Imm (Int32.of_int_exn 5); csr = csr_address }
   ; Csr { op = Csrrs; rd = 2; src = Imm (Int32.of_int_exn 2); csr = csr_address }
   ; Csr { op = Csrrc; rd = 3; src = Imm (Int32.of_int_exn 1); csr = csr_address }
@@ -80,14 +81,14 @@ let expected_regs =
 ;;
 
 let () =
-  let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero in
+  let emulator = Riscvemulate.State.init ~insns:program ~addr:Int32.zero in
   let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves in
   List.iter program ~f:(fun _ ->
     Sim.Cpu.cycle_insn sim;
-    Riscvemulate.step emulator);
+    Riscvemulate.Unpriv.step emulator);
   Sim.Cpu.flush sim;
   let sim_regs = Sim.Cpu.regs sim
-  and emulator_regs = Riscvemulate.regs emulator in
+  and emulator_regs = Riscvemulate.State.regs emulator in
   if not (Array.equal Int32.equal sim_regs expected_regs)
   then raise_s [%message "CSR hardware result mismatch" (sim_regs : int32 array)];
   if not (Array.equal Int32.equal emulator_regs expected_regs)

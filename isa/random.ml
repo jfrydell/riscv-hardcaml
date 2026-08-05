@@ -1,9 +1,9 @@
-(* Tools for generating random RISC-V programs *)
+(** Tools for generating random RISC-V programs *)
 
 open! Core
 
 let aluop ~subenabled () =
-  Riscv.(
+  Insn.(
     match Random.int (if subenabled then 10 else 9) with
     | 0 -> Add
     | 1 -> Xor
@@ -18,10 +18,10 @@ let aluop ~subenabled () =
     | _ -> failwith "invalid random")
 ;;
 
-let sign () = if Random.bool () then Riscv.Signed else Riscv.Unsigned
+let sign () = if Random.bool () then Insn.Signed else Insn.Unsigned
 
 let memsize () =
-  Riscv.(
+  Insn.(
     match Random.int 3 with
     | 0 -> Byte
     | 1 -> Half
@@ -30,7 +30,7 @@ let memsize () =
 ;;
 
 let branchop () =
-  Riscv.(
+  Insn.(
     match Random.int 4 with
     | 0 -> Eq
     | 1 -> Neq
@@ -70,10 +70,10 @@ let instruction
   in
   match Random.int 9 with
   | 0 ->
-    Riscv.IntReg (aluop ~subenabled:true (), { rd = reg (); rs1 = reg (); rs2 = reg () })
+    Insn.IntReg (aluop ~subenabled:true (), { rd = reg (); rs1 = reg (); rs2 = reg () })
   | 1 ->
     let aluop = aluop ~subenabled:false () in
-    Riscv.IntImm
+    Insn.IntImm
       ( aluop
       , { rd = reg ()
         ; rs1 = reg ()
@@ -83,13 +83,13 @@ let instruction
                Int32.(imm 4 0 land of_int_exn 31) (* Don't sign-extend shift amount *)
              | _ -> imm 11 0)
         } )
-  | 2 -> Riscv.Load (memsize (), sign (), { rd = reg (); rs1 = reg (); imm = addr () })
-  | 3 -> Riscv.Store (memsize (), { rs1 = reg (); rs2 = reg (); imm = addr () })
-  | 4 -> Riscv.Branch (branchop (), { rs1 = reg (); rs2 = reg (); imm = branch_imm 12 1 })
-  | 5 -> Riscv.Jal { rd = reg (); imm = branch_imm 20 2 }
-  | 6 -> Riscv.Jalr { rs1 = reg (); rd = reg (); imm = branch_imm 11 0 }
-  | 7 -> Riscv.Lui { rd = reg (); imm = imm 31 12 }
-  | 8 -> Riscv.AuiPc { rd = reg (); imm = imm 31 12 }
+  | 2 -> Insn.Load (memsize (), sign (), { rd = reg (); rs1 = reg (); imm = addr () })
+  | 3 -> Insn.Store (memsize (), { rs1 = reg (); rs2 = reg (); imm = addr () })
+  | 4 -> Insn.Branch (branchop (), { rs1 = reg (); rs2 = reg (); imm = branch_imm 12 1 })
+  | 5 -> Insn.Jal { rd = reg (); imm = branch_imm 20 2 }
+  | 6 -> Insn.Jalr { rs1 = reg (); rd = reg (); imm = branch_imm 11 0 }
+  | 7 -> Insn.Lui { rd = reg (); imm = imm 31 12 }
+  | 8 -> Insn.AuiPc { rd = reg (); imm = imm 31 12 }
   | _ -> failwith "invalid random"
 ;;
 
@@ -99,14 +99,14 @@ let%test "disassembler roundtrip fuzz" =
   List.init 10000 ~f:(fun _ ->
     instruction ~mem_range:Int32.(of_int_exn (-2048), of_int_exn 2047) ())
   |> List.iteri ~f:(fun i insn ->
-    if not (Riscv.roundtrip insn)
+    if not (Insn.roundtrip insn)
     then (
       Stdio.printf "Fuzz test %d failed:\n" i;
       Stdio.printf "Original sexp:  ";
-      Stdio.print_s (Riscv.sexp_of_insn insn);
-      Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (Riscv.to_int32 insn));
+      Stdio.print_s (Insn.sexp_of_insn insn);
+      Stdio.printf "Original to binary: %08x\n" (Int32.to_int_exn (Insn.to_int32 insn));
       Stdio.printf "Roundtrip sexp: ";
-      Stdio.print_s (Riscv.sexp_of_insn (Riscv.of_int32_exn (Riscv.to_int32 insn)));
+      Stdio.print_s (Insn.sexp_of_insn (Insn.of_int32_exn (Insn.to_int32 insn)));
       failwith "bad roundtrip"));
   true
 ;;

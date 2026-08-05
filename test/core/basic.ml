@@ -2,7 +2,7 @@ open! Base
 
 let basic_test = Test_definitions.Basic.get_exn 0
 let program = basic_test.program
-let emulator = Riscvemulate.init ~insns:program ~addr:Int32.zero
+let emulator = Riscvemulate.State.init ~insns:program ~addr:Int32.zero
 let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves
 
 (* Run for 2 cycles and check regs *)

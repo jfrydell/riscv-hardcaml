@@ -1,16 +1,17 @@
 open! Core
+module Insn = Riscv_isa.Insn
 
 module Basic = struct
   type t =
     { name : string
-    ; program : Riscvemulate.insn list
+    ; program : Insn.insn list
     ; insn_count : int
     }
 
   let all =
     [ { name = "basic"
       ; program =
-          Riscvemulate.
+          Insn.
             [ IntImm (Add, { rd = 1; rs1 = 0; imm = Int32.of_int_exn 7 })
             ; IntReg (Add, { rd = 2; rs1 = 1; rs2 = 1 })
             ; Store (Half, { rs1 = 2; rs2 = 1; imm = Int32.of_int_exn (-14) })
@@ -33,7 +34,7 @@ module Fuzz = struct
     ; insn_count_low : int
     ; insn_count_high : int
     ; reg_max : int
-    ; filter : Riscvemulate.insn -> bool
+    ; filter : Insn.insn -> bool
     }
 
   let small =
@@ -45,7 +46,7 @@ module Fuzz = struct
     ; reg_max = 4
     ; filter =
         (function
-          | Riscvemulate.IntImm (Add, _) | Load _ | Store _ | Branch _ -> true
+          | Insn.IntImm (Insn.Add, _) | Insn.Load _ | Insn.Store _ | Insn.Branch _ -> true
           | _ -> false)
     }
   ;;

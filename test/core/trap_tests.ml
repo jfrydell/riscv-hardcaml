@@ -1,5 +1,6 @@
 open! Core
-open Riscvemulate
+open Riscv_isa.Insn
+open Riscvemulate.State
 open Trap_test_utils
 
 let test_synchronous_traps_and_returns () =

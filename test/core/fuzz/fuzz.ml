@@ -1,12 +1,15 @@
 open! Core
+module Insn = Riscv_isa.Insn
+module State = Riscvemulate.State
+module Unpriv = Riscvemulate.Unpriv
 
-(* Instruction generator using the derived [@@deriving quickcheck] from riscv.ml.
+(* Instruction generator using the derived [@@deriving quickcheck] from isa/insn.ml.
    Filters system instructions and normalizes through encode/decode roundtrip
    to ensure only hardware-representable instructions are produced. *)
 let insn_generator ~reg_max =
   let reg_ok r = r < reg_max in
-  Quickcheck.Generator.filter_map Riscvemulate.quickcheck_generator_insn ~f:(fun insn ->
-    let open Riscvemulate in
+  Quickcheck.Generator.filter_map Insn.quickcheck_generator_insn ~f:(fun insn ->
+    let open Insn in
     match insn with
     | Ecall | Ebreak | Mret | Sret | Csr _ -> None
     | _ ->
@@ -58,17 +61,17 @@ let generate_program ~insn_count ~insn_stream ~filter =
     insn
   in
   let insn_mem = Hashtbl.create (module Int32)
-  and emulator = Riscvemulate.blank ()
+  and emulator = State.blank ()
   and insn_trace = ref [] in
   (* A candidate instruction is invalid if the program ends up at already-accessed memory or
      is not aligned to 4 bytes. Also forbid instructions that access the instruction that follows
      them, and forbid reexecuting instructions. *)
   let candidate_valid insn =
     filter insn
-    && (not @@ Riscvemulate.is_unaligned_access ~regs:emulator.regs ~insn)
+    && (not @@ Unpriv.is_unaligned_access ~regs:emulator.regs ~insn)
     &&
-    let newpc = Riscvemulate.next_pc ~regs:emulator.regs ~pc:!(emulator.pc) ~insn in
-    let clobber = Riscvemulate.next_access ~regs:emulator.regs ~insn in
+    let newpc = Unpriv.next_pc ~regs:emulator.regs ~pc:!(emulator.pc) ~insn in
+    let clobber = Unpriv.next_access ~regs:emulator.regs ~insn in
     Int32.(newpc land of_int_exn 3 = zero)
     (* Keep instruction fetches below the temporary I/O address boundary. *)
     && Int32.(newpc >= zero)
@@ -80,20 +83,12 @@ let generate_program ~insn_count ~insn_stream ~filter =
   for _ = 1 to insn_count do
     let insn = resample ~f:get_insn ~cond:candidate_valid in
     List.iter [ insn_mem; emulator.memory ] ~f:(fun memory ->
-      Riscvemulate.store
-        ~memory
-        ~addr:!(emulator.pc)
-        ~value:(Riscvemulate.to_int32 insn)
-        ~size:4);
+      State.store ~memory ~addr:!(emulator.pc) ~value:(Insn.to_int32 insn) ~size:4);
     insn_trace := insn :: !insn_trace;
-    Riscvemulate.step emulator
+    Unpriv.step emulator
   done;
-  let halt = Riscvemulate.Branch (Eq, { rs1 = 0; rs2 = 0; imm = Int32.zero }) in
-  Riscvemulate.store
-    ~memory:insn_mem
-    ~addr:!(emulator.pc)
-    ~size:4
-    ~value:Riscvemulate.(to_int32 halt);
+  let halt = Insn.Branch (Insn.Eq, { rs1 = 0; rs2 = 0; imm = Int32.zero }) in
+  State.store ~memory:insn_mem ~addr:!(emulator.pc) ~size:4 ~value:(Insn.to_int32 halt);
   insn_mem, List.rev !insn_trace
 ;;
 
@@ -101,10 +96,10 @@ let generate_program ~insn_count ~insn_stream ~filter =
    same and Some with diagnostics otherwise. *)
 let test_program ~cycle_fn ~program ~insn_count =
   let sim = Sim.Cpu.create ~memory:(Hashtbl.copy program) No_waves in
-  let emulator = Riscvemulate.with_mem program in
+  let emulator = State.with_mem program in
   for _ = 0 to insn_count do
     Sim.Cpu.cycle_insn ?cycle_fn sim;
-    Riscvemulate.step emulator
+    Unpriv.step emulator
   done;
   Sim.Cpu.flush sim;
   let mem_diff =
@@ -157,7 +152,7 @@ let check_equivalence ?(filter = Fn.const true) ?cycle_fn ~reg_max { seed; insn_
         "hardware/emulator mismatch"
           (seed : int)
           (insn_count : int)
-          (trace : Riscvemulate.insn list)
+          (trace : Insn.insn list)
           (correct_regs : int32 array)
           (sim_regs : int32 array)
           (mem_diff : Sexp.t)]

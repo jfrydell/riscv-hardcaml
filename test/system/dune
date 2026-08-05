@@ -4,6 +4,7 @@
  (libraries
   core
   hardcaml
+  riscv_isa
   riscv_system
   riscvemulate
   trap_test_utils)

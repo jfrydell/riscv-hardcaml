@@ -1,6 +1,7 @@
 open! Core
 open Hardcaml
-open Riscvemulate
+open Riscv_isa.Insn
+open Riscvemulate.State
 open Trap_test_utils
 
 module Interrupt_system = struct

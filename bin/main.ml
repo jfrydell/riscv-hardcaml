@@ -2,6 +2,9 @@ open! Core
 open Hardcaml
 open Hardcaml_waveterm
 module Command = Core.Command
+module Insn = Riscv_isa.Insn
+module State = Riscvemulate.State
+module Unpriv = Riscvemulate.Unpriv
 
 module Trace_info = struct
   type t =
@@ -46,7 +49,7 @@ module Debug_target = struct
 
   let load_basic_test basic_test =
     let test = Test_definitions.Basic.get_exn basic_test in
-    let emulator = Riscvemulate.init ~insns:test.program ~addr:Int32.zero in
+    let emulator = State.init ~insns:test.program ~addr:Int32.zero in
     { memory = Hashtbl.copy emulator.memory
     ; insn_count = test.insn_count
     ; description = [%string "basic test %{test.name} (%{basic_test#Int})"]
@@ -88,11 +91,9 @@ let create_sim ~memory ~view_waves =
 ;;
 
 let load_hw_insn ~memory ~pc =
-  let insn_bits =
-    Riscvemulate.load ~memory ~addr:pc ~size:4 ~extend:Riscvemulate.Unsigned
-  in
-  match Riscvemulate.of_int32 insn_bits with
-  | Ok insn -> Sexp.to_string_hum [%sexp (insn : Riscvemulate.insn)]
+  let insn_bits = State.load ~memory ~addr:pc ~size:4 ~extend:Insn.Unsigned in
+  match Insn.of_int32 insn_bits with
+  | Ok insn -> Sexp.to_string_hum [%sexp (insn : Insn.insn)]
   | Error error -> Error.to_string_hum error
 ;;
 
@@ -122,15 +123,15 @@ let print_hw_trace ~cycle sim trace_infos =
 let print_emulator_trace ~step emulator trace_infos =
   if not (List.is_empty trace_infos)
   then (
-    let pc = Riscvemulate.pc emulator in
-    let regs = Riscvemulate.regs emulator in
+    let pc = State.pc emulator in
+    let regs = State.regs emulator in
     let fields =
       List.map trace_infos ~f:(function
         | Trace_info.Reg reg -> [%string "x%{reg#Int}=%{regs.(reg)#Int32}"]
         | Pc -> [%string "pc=%{pc#Int32}"]
         | Insn ->
-          let insn = Riscvemulate.current_pc_insn emulator in
-          [%string "insn=%{Sexp.to_string_hum [%sexp (insn : Riscvemulate.insn)]}"])
+          let insn = Unpriv.current_pc_insn emulator in
+          [%string "insn=%{Sexp.to_string_hum [%sexp (insn : Insn.insn)]}"])
       |> String.concat ~sep:" "
     in
     print_endline [%string "emu step=%{step#Int} %{fields}"])
@@ -139,10 +140,10 @@ let print_emulator_trace ~step emulator trace_infos =
 let run_emulator_trace ~memory ~insn_count trace_infos =
   if not (List.is_empty trace_infos)
   then (
-    let emulator = Riscvemulate.with_mem (Hashtbl.copy memory) in
+    let emulator = State.with_mem (Hashtbl.copy memory) in
     for step = 1 to insn_count do
       print_emulator_trace ~step emulator trace_infos;
-      Riscvemulate.step emulator
+      Unpriv.step emulator
     done)
 ;;
 

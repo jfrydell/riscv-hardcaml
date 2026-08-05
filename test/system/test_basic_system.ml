@@ -45,7 +45,7 @@ module Sim = Cyclesim.With_interface (Dut.I) (Dut.O)
 let word_bits value = Bits.of_int32_trunc ~width:32 (Int32.of_string value)
 
 let program =
-  Riscvemulate.
+  Riscv_isa.Insn.
     [ Lui { rd = 1; imm = Int32.of_string "0x80000000" }
     ; Lui { rd = 2; imm = Int32.of_string "0x12345000" }
     ; IntImm (Add, { rd = 2; rs1 = 2; imm = Int32.of_string "0x678" })
@@ -89,7 +89,9 @@ let%test_unit "system routes BRAM and MMIO accesses" =
   inputs.clocking.clear := Bits.vdd;
   Cyclesim.cycle sim;
   inputs.clocking.clear := Bits.gnd;
-  let memory = Riscvemulate.init ~insns:program ~addr:Int32.zero |> Riscvemulate.memory in
+  let memory =
+    Riscvemulate.State.init ~insns:program ~addr:Int32.zero |> Riscvemulate.State.memory
+  in
   System_test_utils.preload_program sim memory;
   run_program sim ~insn_count:(List.length program);
   let registers = read_registers sim in

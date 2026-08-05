@@ -1,5 +1,5 @@
 (library
  (name fuzz)
- (libraries core hardcaml riscvemulate sim)
+ (libraries core hardcaml riscv_isa riscvemulate sim)
  (preprocess
   (pps ppx_jane)))

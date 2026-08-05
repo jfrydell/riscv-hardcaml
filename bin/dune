@@ -3,6 +3,7 @@
  (libraries
   core
   core_unix
+  riscv_isa
   riscv_core
   sim
   riscvemulate

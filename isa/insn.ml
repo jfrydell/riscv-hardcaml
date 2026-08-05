@@ -232,14 +232,7 @@ let of_int32 insn =
       | Srl -> Srl, 0x1f
       | op -> op, -1 (* Others take all bits, sign-extended *)
     in
-    Ok
-      (IntImm
-         ( op
-         , { rd
-           ; rs1
-           ; imm =
-               Int32.(immi land of_int_exn mask)
-           } )))
+    Ok (IntImm (op, { rd; rs1; imm = Int32.(immi land of_int_exn mask) })))
   else (
     let mem_size () =
       match bits insn 13 12 with

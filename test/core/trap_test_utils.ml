@@ -1,5 +1,7 @@
 open! Core
-open Riscvemulate
+open Riscv_isa.Insn
+open Riscvemulate.State
+open Riscvemulate.Unpriv
 
 let int = Int32.of_int_exn
 let addi ~rd ~rs1 imm = IntImm (Add, { rd; rs1; imm = int imm })
