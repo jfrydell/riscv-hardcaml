@@ -57,10 +57,10 @@ module Debug_target = struct
   ;;
 
   let load_fuzz_test ~name ~seed ~insn_count =
-    let test = Test_definitions.Fuzz.of_name_exn name in
-    let insn_stream = Fuzz.insn_stream ~reg_max:test.reg_max ~seed in
+    let test = Fuzz.Fuzz_tests.of_name_exn name in
+    let insn_stream = Fuzz.Fuzzing.insn_stream ~reg_max:test.reg_max ~seed in
     let memory, _trace =
-      Fuzz.generate_program ~insn_count ~insn_stream ~filter:test.filter
+      Fuzz.Fuzzing.generate_program ~insn_count ~insn_stream ~filter:test.filter
     in
     { memory
     ; insn_count

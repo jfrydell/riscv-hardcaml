@@ -32,6 +32,7 @@ module Make (Config : Config) = struct
     type 'a t =
       { to_mem : 'a Memory.Bus.To_mem.t
       ; commit_pc : 'a With_valid.t [@bits 32]
+      ; csrs : 'a Privileged.Csrs.t
       }
     [@@deriving hardcaml]
   end
@@ -119,7 +120,7 @@ module Make (Config : Config) = struct
     match Config.caches with
     | L1s ->
       Memory.Bus.From_mem.Of_signal.assign l1s_from_mem from_mem;
-      ({ to_mem = l1s_arb.dn_req; commit_pc = core.commit_pc } : _ O.t)
+      ({ to_mem = l1s_arb.dn_req; commit_pc = core.commit_pc; csrs = core.csrs } : _ O.t)
     | L2 ->
       let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
         Memory.Bus.From_mem.Of_signal.wires ()
@@ -131,7 +132,7 @@ module Make (Config : Config) = struct
       in
       Memory.Bus.From_mem.Of_signal.assign l1s_from_mem l2.to_l1;
       Memory.Bus.From_mem.Of_signal.assign l2_from_mem from_mem;
-      ({ to_mem = l2.to_mem; commit_pc = core.commit_pc } : _ O.t)
+      ({ to_mem = l2.to_mem; commit_pc = core.commit_pc; csrs = core.csrs } : _ O.t)
   ;;
 
   let hierarchical =

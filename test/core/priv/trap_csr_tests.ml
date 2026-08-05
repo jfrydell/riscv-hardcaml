@@ -287,3 +287,4 @@ let () =
   test_csr_bank_trap_write ();
   Stdio.print_string "Trap CSR updates: all modes good\n"
 ;;
+

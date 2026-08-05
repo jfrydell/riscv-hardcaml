@@ -328,3 +328,4 @@ let () =
   test_delegated_vectored_interrupt_and_supervisor_enable ();
   Stdio.print_endline "Trap instructions and interrupts: all scenarios good"
 ;;
+

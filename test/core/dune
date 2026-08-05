@@ -13,22 +13,14 @@
   (pps ppx_jane)))
 
 (tests
- (names basic fuzz_tests csr_tests trap_csr_tests trap_tests)
- (modules
-  basic
-  fuzz_tests
-  csr_tests
-  trap_csr_tests
-  trap_tests)
+ (names basic)
+ (modules basic)
  (libraries
   core
   hardcaml
   riscv_isa
-  privileged
   riscvemulate
   sim
-  fuzz
-  test_definitions
-  trap_test_utils)
+  test_definitions)
  (preprocess
   (pps ppx_jane ppx_hardcaml ppx_sexp_conv)))

@@ -95,3 +95,4 @@ let () =
   then raise_s [%message "CSR emulator result mismatch" (emulator_regs : int32 array)];
   Stdio.print_string "CSR program: all modes good\n"
 ;;
+

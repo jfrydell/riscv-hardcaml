@@ -1,0 +1,17 @@
+(tests
+ (names csr_tests trap_csr_tests trap_tests trap_fuzz_tests)
+ (modules
+  csr_tests
+  trap_csr_tests
+  trap_tests
+  trap_fuzz_tests)
+ (libraries
+  core
+  hardcaml
+  riscv_isa
+  privileged
+  riscvemulate
+  sim
+  trap_test_utils)
+ (preprocess
+  (pps ppx_jane ppx_hardcaml ppx_sexp_conv)))
