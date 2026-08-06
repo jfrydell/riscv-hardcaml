@@ -144,7 +144,8 @@ let create
       }
   in
   Csrs.Of_signal.assign csrs csr_bank.csrs;
-  (* The trap is finished once the CSR update goes through. *)
+  (* The trap is finished once the CSR update goes through (meaning updated
+     values are visible).  *)
   trap_started <-- Utils.sr ~set:action_start ~reset:csr_bank.write_done clocking;
   ({ trap_active = action_start ||: trap_started
    ; squash_M

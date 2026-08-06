@@ -1,5 +1,6 @@
 open! Core
 open Hardcaml
+open Signal
 
 (** Number of cycles to pipeline explicit CSR write decode (address match and route to
     CSRs) by. *)
@@ -20,6 +21,7 @@ module O = struct
   type 'a t =
     { csrs : 'a Csrs.t
     ; write_done : 'a
+    (** Pulses high the cycle that a write is complete and new values are visible. *)
     }
   [@@deriving hardcaml]
 end
@@ -62,7 +64,10 @@ let create scope ({ clocking; mip; explicit_write; trap_write } : _ I.t) =
     }
   in
   ({ csrs = visible_csrs
-   ; write_done = Signal.(decoded_explicit.valid |: trap_write.trap |: trap_write.ret)
+   ; write_done =
+       Types.Clocking.reg
+         clocking
+         (decoded_explicit.valid |: trap_write.trap |: trap_write.ret)
    }
    : _ O.t)
 ;;

@@ -1,10 +1,6 @@
 (tests
- (names csr_tests trap_csr_tests trap_tests trap_fuzz_tests)
- (modules
-  csr_tests
-  trap_csr_tests
-  trap_tests
-  trap_fuzz_tests)
+ (names csr_tests mmu_basic_test trap_csr_tests trap_tests trap_fuzz_tests)
+ (modules csr_tests mmu_basic_test trap_csr_tests trap_tests trap_fuzz_tests)
  (libraries
   core
   hardcaml
