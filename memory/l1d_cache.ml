@@ -9,8 +9,8 @@ let addr_width = Memory_bus.addr_width
 let data_width = Memory_bus.data_width
 let block_size_bits = Memory_bus.block_size_bits
 
-(* 512 * 32B blocks = 131 KB L1 cache. *)
-let num_sets = 512
+(* 128 * 32B blocks = 4 KB L1 cache; max for (direct-mapped) VIPT. *)
+let num_sets = 128
 let bits_byte_in_block = address_bits_for (block_size_bits / 8)
 let bits_set_index = address_bits_for num_sets
 let bits_tag = addr_width - bits_byte_in_block - bits_set_index

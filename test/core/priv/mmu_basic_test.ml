@@ -3,7 +3,9 @@ open Riscv_isa.Insn
 open Riscvemulate.State
 open Trap_test_utils
 
-let virtual_address = 0x01407000
+let user_code_ppn = 0
+let code_page_offset = 0x100
+let code_virtual_address = 0x01407000 + code_page_offset
 let load_virtual_address = 0x01408000
 let store_virtual_address = 0x01409000
 let load_value = 0x12345678
@@ -16,12 +18,13 @@ let test_instruction_fetch_through_sv32 () =
         , [ Lui { rd = 1; imm = Int32.min_value }
           ; addi ~rd:1 ~rs1:1 1
           ; csrw Privileged.Csrs.addresses.satp 1
-          ; Lui { rd = 2; imm = int virtual_address }
+          ; Lui { rd = 2; imm = int 0x01407000 }
+          ; addi ~rd:2 ~rs1:2 code_page_offset
           ; csrw mepc 2
           ; csrw mstatus 0
           ; Mret
           ] )
-      ; ( 0x3000
+      ; ( (user_code_ppn lsl 12) + code_page_offset
         , [ Lui { rd = 3; imm = int load_virtual_address }
           ; Load (Word, Signed, { rd = 4; rs1 = 3; imm = Int32.zero })
           ; Lui { rd = 5; imm = int store_virtual_address }
@@ -35,7 +38,7 @@ let test_instruction_fetch_through_sv32 () =
   (* VPN[1] = 5 selects a non-leaf PTE pointing at the page table at PPN 2. *)
   store ~memory ~addr:(int 0x1014) ~size:4 ~value:(int ((2 lsl 10) lor 1));
   (* VPN[0] = 7 selects an executable user page mapped to PPN 3. *)
-  store ~memory ~addr:(int 0x201c) ~size:4 ~value:(int ((3 lsl 10) lor 0x19));
+  store ~memory ~addr:(int 0x201c) ~size:4 ~value:(int ((user_code_ppn lsl 10) lor 0x19));
   (* The next two virtual pages map to readable PPN 4 and read/write PPN 5. *)
   store ~memory ~addr:(int 0x2020) ~size:4 ~value:(int ((4 lsl 10) lor 0x13));
   store ~memory ~addr:(int 0x2024) ~size:4 ~value:(int ((5 lsl 10) lor 0x17));
@@ -53,12 +56,12 @@ let test_instruction_fetch_through_sv32 () =
   in
   if not (Int32.equal stored_value (int load_value))
   then raise_s [%message "Translated store did not update memory" (stored_value : int32)];
-  if not (List.mem commits (int virtual_address) ~equal:Int32.equal)
+  if not (List.mem commits (int code_virtual_address) ~equal:Int32.equal)
   then
     raise_s
       [%message
         "Translated user instruction did not commit"
-          (virtual_address : int)
+          (code_virtual_address : int)
           (commits : int32 list)]
 ;;
 

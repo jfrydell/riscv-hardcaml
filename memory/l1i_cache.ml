@@ -7,7 +7,7 @@ let data_width = Memory_bus.data_width
 let block_size_bits = Memory_bus.block_size_bits
 
 (* Match the current L1 D-cache geometry. *)
-let num_sets = 512
+let num_sets = 128
 let bits_byte_in_block = address_bits_for (block_size_bits / 8)
 let bits_set_index = address_bits_for num_sets
 let bits_tag = addr_width - bits_byte_in_block - bits_set_index

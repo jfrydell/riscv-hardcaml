@@ -63,13 +63,13 @@ let create scope (i : _ I.t) =
   let%hw trap_active = wire 1 in
   let%hw trap_squash_M = wire 1 in
   let%hw branch_execute = wire 1 in
-  (* The instruction finishing F is garbage due to a trap or branch, possibly which occurred previously while F was stalled. (Always will be true when [trap_active] or [branch_execute].) *)
+  (* The instruction finishing F is garbage due to a trap or branch, possibly which occurred previously while F was stalled. *)
   let%hw fetched_insn_invalid = wire 1 in
   let%hw.Pipeline.Pipelined_bit.Of_signal bubble =
     { w = trap_squash_M ||: stall.m
     ; m = trap_active ||: stall.x
     ; x = branch_execute ||: trap_active ||: stall.d
-    ; d = fetched_insn_invalid ||: stall.f
+    ; d = branch_execute ||: trap_active ||: fetched_insn_invalid ||: stall.f
     ; f = gnd
     }
   in
