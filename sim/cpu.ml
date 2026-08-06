@@ -57,12 +57,8 @@ let effective_memory ~backing_memory ~l2_cache_state =
               Stdlib.Int32.logor
                 (Stdlib.Int32.shift_left tag (bits_set_index + bits_byte_in_block))
                 (Stdlib.Int32.logor
-                   (Stdlib.Int32.shift_left
-                      (Int32.of_int_exn index)
-                      bits_byte_in_block)
-                   (Stdlib.Int32.shift_left
-                      (Int32.of_int_exn word)
-                      bits_byte_in_word))
+                   (Stdlib.Int32.shift_left (Int32.of_int_exn index) bits_byte_in_block)
+                   (Stdlib.Int32.shift_left (Int32.of_int_exn word) bits_byte_in_word))
             in
             write_word_to_memory ~memory ~addr data.(data_index))
         done)));

@@ -33,11 +33,12 @@ module Make (Config : Config) = struct
       { to_mem : 'a Memory.Bus.To_mem.t
       ; commit_pc : 'a With_valid.t [@bits 32]
       ; csrs : 'a Privileged.Csrs.t
+      ; pipeline_debugging : 'a Riscv_core.Cpu.Pipeline_status.t
       }
     [@@deriving hardcaml]
   end
 
-  let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) =
+  let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) : _ O.t =
     (* Instantiate core, with wires for L1 cache outputs. *)
     let%hw.Memory.L1d_cache.To_pipe.Of_signal core_from_l1d =
       Memory.L1d_cache.To_pipe.Of_signal.wires ()
@@ -117,22 +118,29 @@ module Make (Config : Config) = struct
       l1s_arb.up_resp
       ~f:Memory.Bus.From_mem.Of_signal.assign;
     (* Instantiate L2 cache if necessary, or otherwise connect L1s to memory I/O. *)
-    match Config.caches with
-    | L1s ->
-      Memory.Bus.From_mem.Of_signal.assign l1s_from_mem from_mem;
-      ({ to_mem = l1s_arb.dn_req; commit_pc = core.commit_pc; csrs = core.csrs } : _ O.t)
-    | L2 ->
-      let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
-        Memory.Bus.From_mem.Of_signal.wires ()
-      in
-      let%hw.Memory.L2_cache.O.Of_signal l2 =
-        Memory.L2_cache.hierarchical
-          ~scope
-          { clocking; from_l1 = l1s_arb.dn_req; from_mem = l2_from_mem }
-      in
-      Memory.Bus.From_mem.Of_signal.assign l1s_from_mem l2.to_l1;
-      Memory.Bus.From_mem.Of_signal.assign l2_from_mem from_mem;
-      ({ to_mem = l2.to_mem; commit_pc = core.commit_pc; csrs = core.csrs } : _ O.t)
+    let to_mem =
+      match Config.caches with
+      | L1s ->
+        Memory.Bus.From_mem.Of_signal.assign l1s_from_mem from_mem;
+        l1s_arb.dn_req
+      | L2 ->
+        let%hw.Memory.Bus.From_mem.Of_signal l2_from_mem =
+          Memory.Bus.From_mem.Of_signal.wires ()
+        in
+        let%hw.Memory.L2_cache.O.Of_signal l2 =
+          Memory.L2_cache.hierarchical
+            ~scope
+            { clocking; from_l1 = l1s_arb.dn_req; from_mem = l2_from_mem }
+        in
+        Memory.Bus.From_mem.Of_signal.assign l1s_from_mem l2.to_l1;
+        Memory.Bus.From_mem.Of_signal.assign l2_from_mem from_mem;
+        l2.to_mem
+    in
+    { to_mem
+    ; commit_pc = core.commit_pc
+    ; csrs = core.csrs
+    ; pipeline_debugging = core.pipeline_status
+    }
   ;;
 
   let hierarchical =

@@ -13,13 +13,27 @@ module I = struct
   [@@deriving hardcaml]
 end
 
+(** Pipeline status for debugging. *)
+module Pipeline_status = struct
+  type 'a t =
+    { stall : 'a Pipeline.Pipelined_bit.t
+    ; bubble : 'a Pipeline.Pipelined_bit.t
+    ; trap_active : 'a
+    ; is_insn : 'a Pipeline.Pipelined_bit.t
+    ; pc : 'a Pipeline.Pipelined_word.t
+    ; last_pc_update : 'a [@bits 32]
+    }
+  [@@deriving hardcaml]
+end
+
 module O = struct
   type 'a t =
     { to_l1i : 'a Memory.L1i_cache.From_pipe.t
     ; to_l1d : 'a Memory.L1d_cache.From_pipe.t
-    ; csrs : 'a Privileged.Csrs.t (** Current CSR values. *)
     ; commit_pc : 'a With_valid.t [@bits 32]
     (** The PC of the instruction committing this cycle, when valid. *)
+    ; csrs : 'a Privileged.Csrs.t (** Current CSR values. *)
+    ; pipeline_status : 'a Pipeline_status.t
     }
   [@@deriving hardcaml]
 end
@@ -300,7 +314,21 @@ let create scope (i : _ I.t) =
   With_valid.iter2 ~f:( <-- ) trap_pc trap.handler_pc;
   Privileged.Csrs.Of_signal.assign csrs trap.csrs;
   let%hw commit_valid = is_insn.w &&: ~:(stall.w) in
-  O.{ to_l1i; to_l1d; csrs; commit_pc = { valid = commit_valid; value = pc.w } }
+  O.
+    { to_l1i
+    ; to_l1d
+    ; csrs
+    ; commit_pc = { value = pc.w; valid = commit_valid }
+    ; pipeline_status =
+        { stall
+        ; bubble
+        ; pc
+        ; trap_active
+        ; is_insn = Pipeline.Pipelined_word.to_untyped is_insn
+        ; last_pc_update =
+            Types.Clocking.reg i.clocking ~enable:pc_update.valid pc_update.value
+        }
+    }
 ;;
 
 let hierarchical =
