@@ -197,13 +197,14 @@ let create scope (i : _ I.t) =
       alu_result.result
   in
   (* Memory stage. Inputs are latched internally. *)
+  let%hw store_data = wire 32 in
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
     ; load = decoded.x.opcode ==: Riscv.Op.load &&: ~:(bubble.m)
     ; store = decoded.x.opcode ==: Riscv.Op.store &&: ~:(bubble.m)
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
-    ; store_data = rs2val.x
+    ; store_data
     }
   in
   stall_memory <-- i.from_l1d.stall;
@@ -251,15 +252,14 @@ let create scope (i : _ I.t) =
            (decoded.x.rs2 ==: decoded.w.rd &: (decoded.x.rs2 <>: zero 5) -- "bypassWX2")
            rdval.w
            rs2val_from_decode.x);
-  (* For store data *)
-  let rs2val_from_execute =
-    Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:X rs2val.x
-  in
-  rs2val.m
+  (* Store data needs to be bypassed before M pipeline register, as it goes
+     into L1 D-cache which does its own latching. TODO: do all bypassing pre-latch like this? *)
+  store_data
   <-- mux2
-        (decoded.m.rs2 ==: decoded.w.rd &: (decoded.m.rs2 <>: zero 5) -- "bypassWM2")
-        rdval.w
-        rs2val_from_execute.m;
+        ((decoded.x.rs2 ==: decoded.m.rd &: (decoded.x.rs2 <>: zero 5))
+         -- "bypass_nextcycle_WM2")
+        rdval_from_memory.m
+        rs2val.x;
   (* CSR write data just gets value from X (could bypass load-to-use, but didn't bother). *)
   let rs1val_from_execute =
     Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:X rs1val.x
@@ -270,7 +270,9 @@ let create scope (i : _ I.t) =
     decoded.x.result_in_m &: (rs ==: decoded.x.rd) &: (rs <>: zero 5)
   in
   (* TODO: shouldn't stall if can bypass to store data, right? otherwise what is rs2val M bypass doing? *)
-  stall_decode <-- (reg_is_load_dest decoded.d.rs1 |: reg_is_load_dest decoded.d.rs2);
+  stall_decode
+  <-- (reg_is_load_dest decoded.d.rs1
+       |: (reg_is_load_dest decoded.d.rs2 &: ~:(decoded.d.rs2_not_used_until_m)));
   (* Trap / CSR write handling.
      Traps are always raised as an instruction finishes the M stage. We can't
      raise earlier because page faults are detected in M, but can't wait until

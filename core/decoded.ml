@@ -52,5 +52,7 @@ type 'a t =
   ; optype : 'a Optype.t
   ; is_csr : 'a
   ; result_in_m : 'a (** An instruction that produces its result in M instead of X. *)
+  ; rs2_not_used_until_m : 'a
+  (** The value in rs2 is not used until M (it is the data for a store). *)
   }
 [@@deriving hardcaml]

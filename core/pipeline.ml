@@ -76,7 +76,7 @@ module Pipelined (Value : Interface.S) = struct
       example, because it was produced later).
 
       TODO: is there any potential issue here if we passed a wire into [forward]? *)
-  let invalid_stage = Value.const (Signal.wire 1)
+  let invalid_stage = Value.const Signal.(wire 1 -- "INVALID_PIPELINE_STAGE")
 
   let is_invalid v = Value.equal Signal.equal v invalid_stage
 
