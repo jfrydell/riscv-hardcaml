@@ -138,11 +138,14 @@ let create scope (i : _ I.t) =
   let%hw trap_active = wire 1 in
   let%hw trap_squash_M = wire 1 in
   let%hw branch_execute = wire 1 in
+  (* The instruction finishing F is garbage due to a trap or branch, possibly which occurred previously while F was stalled. (Always will be true when [trap_active] or [branch_execute].) *)
+  let%hw fetched_insn_invalid = wire 1 in
   let bubble s =
     let withoutstall = function
       | W -> trap_squash_M
       | M -> trap_active
-      | D | X -> branch_execute ||: trap_active
+      | X -> branch_execute ||: trap_active
+      | D -> fetched_insn_invalid
       | _ -> gnd
     in
     withoutstall s ||: stall (index_stage (stage_index s - 1))
@@ -151,29 +154,40 @@ let create scope (i : _ I.t) =
     forward_pipeline ~signal ~stage ~stall ~bubble ?default ~clocking:i.clocking ()
   in
   (* Fetch stage *)
-  (* Next PC to fetch is the branch PC if branching, PC+4 if successfully
-     fetched, or the previous PC if fetch stalled. Note that a branch occurs
-     while fetch is stalled, the PC which missed is now irrelevant, and we need
-     to save the branch PC so the branch insn can continue onward (could
-     imagine stalling execute, but if M and W proceed then bypassing is
-     annoying). *)
-  let%hw branch_pc = wire 32 in
-  let%hw.With_valid.Of_signal trap_pc = { value = wire 32; valid = wire 1 } in
+  (* [pc_to_fetch] holds the PC that we want to begin fetching once the
+     instruction currently being fetched is done. [fetch_pc] stores the PC that is
+     currently being fetched---if fetch doesn't stall, this will always be [reg
+     pc_to_fetch], but a stall causes them to diverge.
+
+     Traps and branches must update the value of [pc_to_fetch], and are tracked
+     in [pc_update]. Notably, a trap or branch only gives its value for a cycle, and
+     if fetch is stalled at that point, this update won't make it to [fetch_pc]
+     immediately. So, as long as fetch was stalled and missed [pc_to_fetch],
+     [pc_to_fetch] holds its value from the previous cycle [pc_to_fetch_latched]
+     (unless there is a(nother) [pc_update]). *)
+  let%hw.With_valid.Of_signal pc_update = { value = wire 32; valid = wire 1 } in
   let%hw pc_reg = wire 32 in
+  let%hw pc_to_fetch_latch = wire 32 in
   let%hw pc_to_fetch =
-    mux2 trap_pc.valid trap_pc.value
-    @@ mux2 branch_execute branch_pc
-    @@ mux2 (stall F) pc_reg (pc_reg +:. 4)
+    mux2 pc_update.valid pc_update.value
+    @@ mux2 (Types.Clocking.reg i.clocking (stall F)) pc_to_fetch_latch (pc_reg +:. 4)
   in
-  pc_reg <-- Types.Clocking.reg i.clocking pc_to_fetch;
+  pc_to_fetch_latch <-- Types.Clocking.reg i.clocking pc_to_fetch;
+  pc_reg <-- Types.Clocking.reg i.clocking ~enable:~:(stall F) pc_to_fetch;
   let pc = forward_pipeline ~signal:pc_reg ~stage:F () in
-  let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i = { pc = pc_to_fetch } in
-  (* Fetch is stalled if the PC missed in the cache. If a branch occurred
-     during miss handling, the I-cache gives [valid] once the miss is handled,
-     and we must ignore. *)
-  (* TODO: don't love the comparison here, and really feels like this should be simplifiable. *)
-  (* TODO: probably should stop fetching while a trap is active. fine to keep doing it, as we will throw away those instructions at D until [trap_active] goes low, but could pollute cache / keep walking page tables looking for impossible translation on non-executable fetch. *)
-  stall_fetch <-- (~:(i.from_l1i.valid) ||: (i.from_l1i.pc <>: pc_reg));
+  (* To handle propagated stalls correctly, we can't let F take in a new PC
+     while it is stalling (technically mux condition could just be propagated
+     stalls, but should simplify and this is better for maintainability). One might
+     think we could include this in [pc_to_fetch], but that doesn't work---if D is
+     stalled while a [pc_update] happens, in principle (in practice shouldn't
+     happen?) we'd need to keep track of that PC update until it can be sent to the
+     L1 I$, but can't send it now (as we'd lose whatever's currently there waiting
+     to go to D). *)
+  (* TODO: probably should stop fetching while a trap is active. fine to keep doing it, as we will throw away those instructions at D. *)
+  let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
+    { pc = mux2 (stall F) pc_reg pc_to_fetch }
+  in
+  stall_fetch <-- ~:(i.from_l1i.valid);
   let insn =
     forward_pipeline
       ~signal:i.from_l1i.insn
@@ -181,6 +195,14 @@ let create scope (i : _ I.t) =
       ~default:(of_hex ~width:32 "00000013")
       ()
   in
+  (* PC updates come from branches and traps, prioritizing traps (shouldn't matter in practice, but they logically happened earlier). *)
+  let%hw branch_pc = wire 32 in
+  let%hw.With_valid.Of_signal trap_pc = { value = wire 32; valid = wire 1 } in
+  pc_update.valid <-- (branch_execute ||: trap_pc.valid);
+  pc_update.value <-- mux2 trap_pc.valid trap_pc.value branch_pc;
+  (* If a PC update occurs, the currently-being-fetched instruction is invalid (and we must remember this until it completes and is replaced by a bubble in D). *)
+  fetched_insn_invalid
+  <-- Utils.sr ~style:`Mealy_set i.clocking ~set:pc_update.valid ~reset:~:(stall F);
   (* for tracking commits *)
   let is_insn = forward_pipeline ~signal:(vdd -- "is_insn") ~stage:F () in
   (* Decode *)
