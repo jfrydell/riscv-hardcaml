@@ -87,6 +87,7 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
        implemented synchronous exceptions which can originate below M. *)
     of_unsigned_int ~width:32 ((1 lsl 2) lor (1 lsl 3) lor (1 lsl 8) lor (1 lsl 9))
   in
+  (* TODO: restrict which interrupts can be delegated from M (e.g., MEI shouldn't be able to, I believe) *)
   let update_funs : _ Csrs.t =
     { sstatus = unchanged
     ; sie = unchanged

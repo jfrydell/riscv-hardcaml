@@ -158,14 +158,16 @@ let create scope (i : _ I.t) =
   let%hw src1x =
     mux2
       (decoded.x.opcode
-       ==: Riscv.Op.branch
-       |: (decoded.x.opcode ==: Riscv.Op.jal)
-       |: (decoded.x.opcode ==: Riscv.Op.auiPc))
+       ==: Riscv_isa.Of_signal.Op.branch
+       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jal)
+       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.auiPc))
       pc.x
       rs1val.x
   in
   (* Second is rs2 for R-type, imm otherwise (including branch, where rs2 is used for comparison while ALU calculates PC) *)
-  let%hw src2x = mux2 (decoded.x.opcode ==: Riscv.Op.intR) rs2val.x decoded.x.imm in
+  let%hw src2x =
+    mux2 (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.intR) rs2val.x decoded.x.imm
+  in
   (* ALU *)
   let%hw.Alu.O.Of_signal alu_result =
     Alu.hierarchical ~scope { src1 = src1x; src2 = src2x; optype = decoded.x.optype }
@@ -194,9 +196,9 @@ let create scope (i : _ I.t) =
   branch_execute
   <-- reduce
         ~f:( |: )
-        [ decoded.x.opcode ==: Riscv.Op.branch &: branch_cond
-        ; decoded.x.opcode ==: Riscv.Op.jal
-        ; decoded.x.opcode ==: Riscv.Op.jalr
+        [ decoded.x.opcode ==: Riscv_isa.Of_signal.Op.branch &: branch_cond
+        ; decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jal
+        ; decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jalr
         ];
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
@@ -206,7 +208,9 @@ let create scope (i : _ I.t) =
   in
   let%hw execute_result =
     mux2
-      (decoded.x.opcode ==: Riscv.Op.jal |: (decoded.x.opcode ==: Riscv.Op.jalr))
+      (decoded.x.opcode
+       ==: Riscv_isa.Of_signal.Op.jal
+       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jalr))
       (pc.x +: of_string "32'd4")
       alu_result.result
   in
@@ -214,8 +218,8 @@ let create scope (i : _ I.t) =
   let%hw store_data = wire 32 in
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
-    ; load = decoded.x.opcode ==: Riscv.Op.load &&: ~:(bubble.m)
-    ; store = decoded.x.opcode ==: Riscv.Op.store &&: ~:(bubble.m)
+    ; load = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load &&: ~:(bubble.m)
+    ; store = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store &&: ~:(bubble.m)
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
     ; store_data
@@ -304,7 +308,7 @@ let create scope (i : _ I.t) =
       ; m_stage = { valid = is_insn.m; stall = stall.m }
       ; pc = pc.m
       ; next_pc = next_pc.m
-      ; detect_exception = { insn = insn.m; rs1 = rs1val.m; csrs }
+      ; detect_exception = { insn = insn.m; decoded = decoded.m; rs1 = rs1val.m; csrs }
       ; interrupt_request =
           { valid = i.request_interrupt; value = of_unsigned_int ~width:4 11 }
       }

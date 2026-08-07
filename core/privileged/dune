@@ -1,6 +1,6 @@
 (library
  (name privileged)
  (public_name riscvhardcaml.privileged)
- (libraries core hardcaml utils)
+ (libraries core hardcaml utils decoded)
  (preprocess
   (pps ppx_jane ppx_hardcaml)))

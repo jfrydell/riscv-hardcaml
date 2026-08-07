@@ -4,11 +4,12 @@ open! Core
 open Hardcaml
 open Signal
 
+(** Info needed by trap & CSR logic to trigger and process an exception. *)
 module Exception_request = struct
   type 'a t =
     { valid : 'a
-    ; cause : 'a [@bits 32]
-    ; value : 'a [@bits 32] (** Value written to [mtval]. *)
+    ; cause : 'a [@bits 32] (** Cause written to [mcause] or [scause]. *)
+    ; value : 'a [@bits 32] (** Value written to [mtval] or [stval]. *)
     }
   [@@deriving hardcaml]
 end
@@ -16,6 +17,7 @@ end
 module I = struct
   type 'a t =
     { insn : 'a [@bits 32]
+    ; decoded : 'a Decoded.t
     ; rs1 : 'a [@bits 32]
     ; csrs : 'a Csrs.t
     }
@@ -32,35 +34,23 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* These will come from the shared decoded instruction after the planned decode refactor.
-   Keeping them local for now avoids a dependency cycle from [privileged] back to the core
-   library. *)
-let env_opcode = of_bit_string "1110011"
-let ecall_insn = of_hex ~width:32 "00000073"
-let ebreak_insn = of_hex ~width:32 "00100073"
-let mret_insn = of_hex ~width:32 "30200073"
-let sret_insn = of_hex ~width:32 "10200073"
-
-let create scope ({ insn; rs1; csrs } : _ I.t) =
-  let%hw opcode = insn.:[6, 0] in
-  let%hw funct3 = insn.:[14, 12] in
-  let%hw is_csr = opcode ==: env_opcode &&: (funct3.:[1, 0] <>:. 0) in
-  let%hw is_ecall = insn ==: ecall_insn in
-  let%hw is_ebreak = insn ==: ebreak_insn in
-  let%hw is_mret = insn ==: mret_insn in
-  let%hw is_sret = insn ==: sret_insn in
-  let%hw is_non_csr_system = opcode ==: env_opcode &&: (funct3 ==:. 0) in
+let create scope ({ insn; decoded; rs1; csrs } : _ I.t) =
+  let%hw is_non_csr_system =
+    decoded.opcode ==: Riscv_isa.Of_signal.Op.env &&: (decoded.funct3 ==:. 0)
+  in
+  (* TODO: move to general Decoded.is_illegal. *)
   let%hw is_illegal_system =
     is_non_csr_system
-    &&: ~:(is_ecall ||: is_ebreak ||: is_mret ||: is_sret)
-    ||: (opcode ==: env_opcode &&: (funct3 ==:. 4))
+    &&: ~:(decoded.is_ecall ||: decoded.is_ebreak ||: decoded.is_mret ||: decoded.is_sret)
+    ||: (decoded.opcode ==: Riscv_isa.Of_signal.Op.env &&: (decoded.funct3 ==:. 4))
   in
-  let%hw illegal_mret = is_mret &&: (csrs.privilege <>:. 3) in
+  let%hw illegal_mret = decoded.is_mret &&: (csrs.privilege <>:. 3) in
   let%hw.Csrs.Mstatus.Fields.Of_signal mstatus =
     Csrs.Mstatus.Fields.of_register csrs.mstatus
   in
   let%hw illegal_sret =
-    is_sret &&: (csrs.privilege.:[1, 0] <:. 1 ||: (csrs.privilege ==:. 1 &&: mstatus.tsr))
+    decoded.is_sret
+    &&: (csrs.privilege.:[1, 0] <:. 1 ||: (csrs.privilege ==:. 1 &&: mstatus.tsr))
   in
   let%hw ecall_cause =
     cases
@@ -79,35 +69,31 @@ let create scope ({ insn; rs1; csrs } : _ I.t) =
     |> reduce ~f:( |: )
   in
   let%hw csr_privilege_allowed = csrs.privilege.:[1, 0] >=: csr_address.:[9, 8] in
-  (* TODO: move to decode *)
-  let%hw csr_writes =
-    funct3.:[1, 0] ==:. 1 ||: (funct3.:[1, 0] >=:. 2 &&: (insn.:[19, 15] <>:. 0))
-  in
   let%hw csr_is_read_only = csr_address.:[11, 10] ==:. 3 in
   let%hw illegal_csr =
-    is_csr
+    decoded.is_csr
     &&: (~:csr_is_implemented
          ||: ~:csr_privilege_allowed
-         ||: (csr_writes &&: csr_is_read_only))
+         ||: (decoded.csr_writes &&: csr_is_read_only))
   in
   let%hw illegal_instruction =
     is_illegal_system ||: illegal_mret ||: illegal_sret ||: illegal_csr
   in
   let%hw.Exception_request.Of_signal exception_request =
-    { valid = is_ecall ||: is_ebreak ||: illegal_instruction
+    { valid = decoded.is_ecall ||: decoded.is_ebreak ||: illegal_instruction
     ; cause =
         mux2
           illegal_instruction
           (of_unsigned_int ~width:32 2)
-          (mux2 is_ebreak (of_unsigned_int ~width:32 3) ecall_cause)
+          (mux2 decoded.is_ebreak (of_unsigned_int ~width:32 3) ecall_cause)
     ; value = mux2 illegal_instruction insn (zero 32)
     }
   in
   ({ exception_request
    ; explicit_csr =
-       { insn; rs1; mideleg = csrs.mideleg; valid = is_csr &&: ~:illegal_csr }
-   ; mret = is_mret &&: ~:illegal_mret
-   ; sret = is_sret &&: ~:illegal_sret
+       { insn; rs1; mideleg = csrs.mideleg; valid = decoded.is_csr &&: ~:illegal_csr }
+   ; mret = decoded.is_mret &&: ~:illegal_mret
+   ; sret = decoded.is_sret &&: ~:illegal_sret
    }
    : _ O.t)
 ;;

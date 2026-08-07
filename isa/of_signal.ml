@@ -1,3 +1,9 @@
+(** Hardcaml [Signal] values for RISC-V ISA.
+
+    TODO: likely can consolidate with other parts of this library (initially were in
+    completely separate directories) *)
+
+open! Core
 open Hardcaml
 open Signal
 
@@ -24,6 +30,7 @@ module System_insn = struct
   let ecall = of_hex ~width:32 "00000073"
   let ebreak = of_hex ~width:32 "00100073"
   let mret = of_hex ~width:32 "30200073"
+  let sret = of_hex ~width:32 "10200073"
 end
 
 (** Values of funct3 for branches and ALU operations. *)

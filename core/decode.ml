@@ -27,17 +27,24 @@ let create scope (insn : _ I.t) =
     sresize ~width:32 (insn.:(31) @: insn.:[19, 12] @: insn.:(20) @: insn.:[30, 21] @: gnd)
   in
   let funct3 = insn.:[14, 12] in
-  let%hw is_csr = opcode ==: Riscv.Op.env &&: (drop_top ~width:1 funct3 <>:. 0) in
+  let%hw is_csr =
+    opcode ==: Riscv_isa.Of_signal.Op.env &&: (drop_top ~width:1 funct3 <>:. 0)
+  in
   let%hw is_csr_imm = is_csr &&: msb funct3 in
   (* Extract immediate based on opcode *)
   let%hw imm =
     cases ~default:(zero 32) opcode
     @@ List.concat_map
-         [ [ Riscv.Op.intI; Riscv.Op.load; Riscv.Op.jalr; Riscv.Op.env ], immi
-         ; [ Riscv.Op.store ], imms
-         ; [ Riscv.Op.branch ], immb
-         ; [ Riscv.Op.jal ], immj
-         ; [ Riscv.Op.lui; Riscv.Op.auiPc ], immu
+         [ ( [ Riscv_isa.Of_signal.Op.intI
+             ; Riscv_isa.Of_signal.Op.load
+             ; Riscv_isa.Of_signal.Op.jalr
+             ; Riscv_isa.Of_signal.Op.env
+             ]
+           , immi )
+         ; [ Riscv_isa.Of_signal.Op.store ], imms
+         ; [ Riscv_isa.Of_signal.Op.branch ], immb
+         ; [ Riscv_isa.Of_signal.Op.jal ], immj
+         ; [ Riscv_isa.Of_signal.Op.lui; Riscv_isa.Of_signal.Op.auiPc ], immu
          ]
          ~f:(fun (s, v) -> List.map s ~f:(fun s -> s, v))
   in
@@ -45,11 +52,18 @@ let create scope (insn : _ I.t) =
   let%hw regmask =
     cases ~default:(zero 3) opcode
     @@ List.concat_map
-         [ [ Riscv.Op.intR; Riscv.Op.load ], of_bit_string "111"
-         ; [ Riscv.Op.intI; Riscv.Op.jalr ], of_bit_string "101"
-         ; [ Riscv.Op.store; Riscv.Op.branch ], of_bit_string "110"
-         ; [ Riscv.Op.jal; Riscv.Op.lui; Riscv.Op.auiPc ], of_bit_string "001"
-         ; ( [ Riscv.Op.env ]
+         [ ( [ Riscv_isa.Of_signal.Op.intR; Riscv_isa.Of_signal.Op.load ]
+           , of_bit_string "111" )
+         ; ( [ Riscv_isa.Of_signal.Op.intI; Riscv_isa.Of_signal.Op.jalr ]
+           , of_bit_string "101" )
+         ; ( [ Riscv_isa.Of_signal.Op.store; Riscv_isa.Of_signal.Op.branch ]
+           , of_bit_string "110" )
+         ; ( [ Riscv_isa.Of_signal.Op.jal
+             ; Riscv_isa.Of_signal.Op.lui
+             ; Riscv_isa.Of_signal.Op.auiPc
+             ]
+           , of_bit_string "001" )
+         ; ( [ Riscv_isa.Of_signal.Op.env ]
            , mux2
                is_csr
                (mux2 is_csr_imm (of_bit_string "001") (of_bit_string "101"))
@@ -69,13 +83,19 @@ let create scope (insn : _ I.t) =
    ; imm
    ; optype =
        Decoded.Optype.of_funct3
-         ~arithr:(opcode ==: Riscv.Op.intR)
-         ~arithi:(opcode ==: Riscv.Op.intI)
+         ~arithr:(opcode ==: Riscv_isa.Of_signal.Op.intR)
+         ~arithi:(opcode ==: Riscv_isa.Of_signal.Op.intI)
          ~f7second:funct7.:(5)
          funct3
    ; is_csr
-   ; result_in_m = opcode ==: Riscv.Op.load ||: is_csr
-   ; rs2_not_used_until_m = opcode ==: Riscv.Op.store
+   ; csr_writes =
+       funct3.:[1, 0] ==:. 1 ||: (funct3.:[1, 0] >=:. 2 &&: (insn.:[19, 15] <>:. 0))
+   ; is_ecall = insn ==: Riscv_isa.Of_signal.System_insn.ecall
+   ; is_ebreak = insn ==: Riscv_isa.Of_signal.System_insn.ebreak
+   ; is_mret = insn ==: Riscv_isa.Of_signal.System_insn.mret
+   ; is_sret = insn ==: Riscv_isa.Of_signal.System_insn.sret
+   ; result_in_m = opcode ==: Riscv_isa.Of_signal.Op.load ||: is_csr
+   ; rs2_not_used_until_m = opcode ==: Riscv_isa.Of_signal.Op.store
    }
    : _ O.t)
 ;;
