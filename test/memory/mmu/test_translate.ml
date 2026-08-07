@@ -58,17 +58,45 @@ let input ~state ~access_type ~va ~valid : Bits.t Dut.I.t =
   }
 ;;
 
-let check_pa ~mode ~va (output : Step.O_data.t) =
+let effective_privilege (state : Bits.t Mmu.State.t) access_type =
+  match access_type with
+  | Mmu.Translate.Access_type.Cases.Instruction -> Bits.to_unsigned_int state.fetch_priv
+  | Load | Store -> Bits.to_unsigned_int state.load_store_priv
+;;
+
+let check_result ~state ~access_type ~mode ~va (output : Step.O_data.t) =
   let output = Step.O_data.before_edge output in
-  if not (Bits.to_bool output.result.valid)
-  then raise_s [%message "translation did not become valid" (va : int)];
-  let actual = Bits.to_unsigned_int output.result.pa in
-  match mode with
-  | Mmu.State.Translation_mode.Cases.Bare | Mmu.State.Translation_mode.Cases.Bare_debug ->
-    if not (Int.equal actual va)
-    then raise_s [%message "unexpected bare translation" (va : int) (actual : int)]
-  | Mmu.State.Translation_mode.Cases.Sv32 ->
-    Sample_page_table.check_translation ~va ~actual_pa:actual
+  let actual_valid = Bits.to_bool output.result.valid in
+  let actual_fault = Bits.to_bool output.result.fault in
+  let expected_fault =
+    match mode with
+    | Mmu.State.Translation_mode.Cases.Bare | Bare_debug -> false
+    | Sv32 ->
+      Sample_page_table.access_fault
+        ~va
+        ~access_type
+        ~effective_priv:(effective_privilege state access_type)
+        ~supervisor_user_access:(Bits.to_bool state.supervisor_user_access)
+  in
+  if Bool.equal actual_fault expected_fault |> not
+     || Bool.equal actual_valid (not expected_fault) |> not
+  then
+    raise_s
+      [%message
+        "unexpected translation status"
+          (va : int)
+          (access_type : Mmu.Translate.Access_type.Cases.t)
+          (actual_valid : bool)
+          (actual_fault : bool)
+          (expected_fault : bool)];
+  if not expected_fault
+  then (
+    let actual = Bits.to_unsigned_int output.result.pa in
+    match mode with
+    | Mmu.State.Translation_mode.Cases.Bare | Bare_debug ->
+      if not (Int.equal actual va)
+      then raise_s [%message "unexpected bare translation" (va : int) (actual : int)]
+    | Sv32 -> Sample_page_table.check_translation ~va ~actual_pa:actual)
 ;;
 
 let issue_translation ~state ~access_type ~mode ~va ~delay_cycles =
@@ -79,7 +107,7 @@ let issue_translation ~state ~access_type ~mode ~va ~delay_cycles =
     if Bits.to_bool (Step.O_data.before_edge output).result.stall
     then wait_for_result ()
     else (
-      check_pa ~mode ~va output;
+      check_result ~state ~access_type ~mode ~va output;
       wait_for_held_result delay_cycles)
   (* Check that we still see result after some delay. *)
   and wait_for_held_result remaining_cycles =
@@ -87,7 +115,7 @@ let issue_translation ~state ~access_type ~mode ~va ~delay_cycles =
     then Step.return ()
     else (
       let%bind.Step output = Step.cycle (input ~state ~access_type ~va ~valid:false) in
-      check_pa ~mode ~va output;
+      check_result ~state ~access_type ~mode ~va output;
       wait_for_held_result (remaining_cycles - 1))
   in
   wait_for_result ()
@@ -289,6 +317,7 @@ let translation_generator =
   and access_type =
     Quickcheck.Generator.of_list
       [ Mmu.Translate.Access_type.Cases.Load
+      ; Mmu.Translate.Access_type.Cases.Store
       ; Mmu.Translate.Access_type.Cases.Instruction
       ]
   and vpn = Int.gen_incl 0 ((1 lsl Mmu.Iface.vpn_width) - 1)
@@ -347,10 +376,61 @@ let run_scenario (translations, delay_values) =
 ;;
 
 let%test_unit "randomized page-table walks with variable memory latency" =
+  let normal_permission_coverage = Int.Hash_set.create () in
+  let superpage_permission_coverage = Int.Hash_set.create () in
+  let saw_invalid_nonleaf_encoding = ref false in
+  let saw_invalid_leaf_encoding = ref false in
+  let saw_forbidden_write = ref false in
+  let record_coverage
+    { mode; priv; fetch_priv; access_type; vpn; asid = _; page_offset = _; delay_cycles = _ }
+    =
+    let effective_priv =
+      match access_type with
+      | Mmu.Translate.Access_type.Cases.Instruction -> fetch_priv
+      | Load | Store -> priv
+    in
+    if Mmu.State.Translation_mode.Cases.compare mode Sv32 = 0 && effective_priv land 2 = 0
+    then (
+      let permissions = Sample_page_table.permissions vpn in
+      let permission_bits = Sample_page_table.permission_bits permissions in
+      Hash_set.add
+        (if Sample_page_table.is_superpage vpn
+         then superpage_permission_coverage
+         else normal_permission_coverage)
+        permission_bits;
+      if not permissions.valid
+      then (
+        let rwx = permission_bits land 7 in
+        saw_invalid_nonleaf_encoding := !saw_invalid_nonleaf_encoding || rwx = 0;
+        saw_invalid_leaf_encoding := !saw_invalid_leaf_encoding || rwx = 7);
+      saw_forbidden_write
+      := !saw_forbidden_write || (permissions.write && not permissions.read))
+  in
   Quickcheck.test
     ~seed:(`Deterministic "mmu-tlb-walker")
     ~sexp_of:[%sexp_of: translation list * int list]
     ~trials:100
     (scenario_generator ~length:200)
-    ~f:run_scenario
+    ~f:(fun ((translations, _) as scenario) ->
+      List.iter translations ~f:record_coverage;
+      run_scenario scenario);
+  let require_permissions name coverage expected =
+    let missing = List.filter expected ~f:(Fn.non (Hash_set.mem coverage)) in
+    if not (List.is_empty missing)
+    then raise_s [%message "randomized MMU permission coverage incomplete" name (missing : int list)]
+  in
+  require_permissions "normal pages" normal_permission_coverage (List.init 16 ~f:Fn.id);
+  require_permissions
+    "superpages"
+    superpage_permission_coverage
+    (List.filter (List.init 16 ~f:Fn.id) ~f:(fun permission -> permission land 7 <> 0));
+  if not (!saw_invalid_nonleaf_encoding && !saw_invalid_leaf_encoding)
+  then
+    raise_s
+      [%message
+        "randomized MMU invalid-PTE coverage incomplete"
+          (!saw_invalid_nonleaf_encoding : bool)
+          (!saw_invalid_leaf_encoding : bool)];
+  if not !saw_forbidden_write
+  then raise_s [%message "randomized MMU did not cover W=1,R=0"]
 ;;
