@@ -124,3 +124,11 @@ module Pipelined_word = Pipelined (Types.Scalar (struct
     let port_name = ""
     let port_width = 32
   end))
+
+(** Forward a value from one stage to another. For values accessed repeatedly,
+    constructing a [Pipelined] is preferred. *)
+let forward ~pipe_info ~from ~to_ ?default signal =
+  Pipelined_word.forward ~from_stage:from ~pipe_info ?default signal
+  |> Pipelined_word.to_untyped
+  |> Pipelined_bit.at_stage ~stage:to_
+;;

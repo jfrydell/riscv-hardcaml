@@ -112,13 +112,15 @@ let create scope (i : _ I.t) =
   let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
     { pc = mux2 stall.f pc_reg pc_to_fetch }
   in
-  stall_fetch <-- ~:(i.from_l1i.valid);
+  stall_fetch <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
   let%hw.Pipeline.Pipelined_word.Of_signal insn =
     Pipeline.Pipelined_word.forward
       ~pipe_info
       ~from_stage:F
       ~default:(of_hex ~width:32 "00000013")
-      i.from_l1i.insn
+      (* Insert no-op on fault, as we don't raise exception until reaching M,
+         where a mistaken store could occur. *)
+      (mux2 i.from_l1i.fault (of_hex ~width:32 "00000013") i.from_l1i.insn)
   in
   (* PC updates come from branches and traps, prioritizing traps (shouldn't matter in practice, but they logically happened earlier). *)
   let%hw branch_pc = wire 32 in
@@ -249,27 +251,22 @@ let create scope (i : _ I.t) =
   reg_dest <-- decoded.w.rd;
   (* Bypassing (TODO: make nice abstraction for this (but not too general like original attempt)? ultimately only two possible things to bypass;
   main thing to abstract over is which values came from rs1 and rs2 and when they were written to) *)
-  let rs1val_from_decode =
-    Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:D rs1val.d
-  and rs2val_from_decode =
-    Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:D rs2val.d
-  in
   rs1val.x
   <-- mux2
         (decoded.x.rs1 ==: decoded.m.rd &: (decoded.x.rs1 <>: zero 5) -- "bypassMX1")
         rdval.m
-        (mux2
+      @@ mux2
            (decoded.x.rs1 ==: decoded.w.rd &: (decoded.x.rs1 <>: zero 5) -- "bypassWX1")
            rdval.w
-           rs1val_from_decode.x);
+      @@ Pipeline.forward ~pipe_info ~from:D ~to_:X rs1val.d;
   rs2val.x
   <-- mux2
         (decoded.x.rs2 ==: decoded.m.rd &: (decoded.x.rs2 <>: zero 5) -- "bypassMX2")
         rdval.m
-        (mux2
+      @@ mux2
            (decoded.x.rs2 ==: decoded.w.rd &: (decoded.x.rs2 <>: zero 5) -- "bypassWX2")
            rdval.w
-           rs2val_from_decode.x);
+      @@ Pipeline.forward ~pipe_info ~from:D ~to_:X rs2val.d;
   (* Store data needs to be bypassed before M pipeline register, as it goes
      into L1 D-cache which does its own latching. TODO: do all bypassing pre-latch like this? *)
   store_data
@@ -279,15 +276,11 @@ let create scope (i : _ I.t) =
         rdval_from_memory.m
         rs2val.x;
   (* CSR write data just gets value from X (could bypass load-to-use, but didn't bother). *)
-  let rs1val_from_execute =
-    Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:X rs1val.x
-  in
-  rs1val.m <-- rs1val_from_execute.m;
+  rs1val.m <-- Pipeline.forward ~pipe_info ~from:X ~to_:M rs1val.x;
   (* Stall logic: stall only needed for load-use hazard (load in X when consuming instruction in D) *)
   let reg_is_load_dest rs =
     decoded.x.result_in_m &: (rs ==: decoded.x.rd) &: (rs <>: zero 5)
   in
-  (* TODO: shouldn't stall if can bypass to store data, right? otherwise what is rs2val M bypass doing? *)
   stall_decode
   <-- (reg_is_load_dest decoded.d.rs1
        |: (reg_is_load_dest decoded.d.rs2 &: ~:(decoded.d.rs2_not_used_until_m)));
@@ -301,6 +294,14 @@ let create scope (i : _ I.t) =
      this outputs a [trap_squash_M] signal stating when the instruction should
      M should not proceed to writeback, and the trap logically occurs before it
      commits (setting EPC to the instruction in M, not the one after). *)
+  let%hw.Privileged.Detect_exception.Triggers.Of_signal exception_triggers =
+    { fetch_fault =
+        Pipeline.forward ~pipe_info ~from:F ~to_:M ~default:gnd i.from_l1i.fault
+    ; memory_fault = i.from_l1d.fault
+    ; branch_unaligned = sel_bottom ~width:2 next_pc.m <>:. 0
+    ; access_unaligned = gnd (* TODO *)
+    }
+  in
   let%hw.Privileged.Trap.O.Of_signal trap =
     Privileged.Trap.hierarchical
       ~scope
@@ -308,7 +309,13 @@ let create scope (i : _ I.t) =
       ; m_stage = { valid = is_insn.m; stall = stall.m }
       ; pc = pc.m
       ; next_pc = next_pc.m
-      ; detect_exception = { insn = insn.m; decoded = decoded.m; rs1 = rs1val.m; csrs }
+      ; detect_exception =
+          { insn = insn.m
+          ; decoded = decoded.m
+          ; rs1 = rs1val.m
+          ; csrs
+          ; triggers = exception_triggers
+          }
       ; interrupt_request =
           { valid = i.request_interrupt; value = of_unsigned_int ~width:4 11 }
       }

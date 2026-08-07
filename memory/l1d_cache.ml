@@ -87,6 +87,7 @@ module To_pipe = struct
     ; stall : 'a
     (** The memory stage is stalled. Output data is invalid, and any access from the
         pipeline is ignored. *)
+    ; fault : 'a (** (If [stall] is low) the given access caused an access fault. *)
     }
   [@@deriving hardcaml]
 end
@@ -132,6 +133,8 @@ let create
   let%hw store_stall = wire 1 in
   (* Stall waiting for address translation. *)
   let%hw stall_translate = wire 1 in
+  (* Note: each of these depends on getting a valid translation, so page faults
+     complete as soon as [stall_translate] lowers. *)
   let%hw stall = load_fill ||: io_load_stall ||: store_stall ||: stall_translate in
   let%hw.Mmu.Translate.O.Of_signal translation =
     Mmu.Translate.hierarchical
@@ -200,7 +203,9 @@ let create
     in
     Metadata.Of_signal.unpack mem.(0)
   in
-  let%hw tag_match = read_metadata.valid &&: (active_tag ==: read_metadata.tag) in
+  let%hw tag_match =
+    translation.result.valid &&: read_metadata.valid &&: (active_tag ==: read_metadata.tag)
+  in
   load_fill <-- (active_access.load &&: ~:tag_match &&: ~:(translation.result.io));
   (* Loads extract and extend data from a word loaded from memory. *)
   let%hw word_offset = sel_bottom ~width:bits_byte_in_word active_access.addr in
@@ -262,7 +267,7 @@ let create
   io_load_stall
   <-- Utils.sr
         ~style:`Mealy
-        ~set:(active_access.load &&: translation.result.io)
+        ~set:(active_access.load &&: translation.result.valid &&: translation.result.io)
         ~reset:cache_from_mem.valid
         clocking;
   (* When a load has missed, request the block from memory until we receive the
@@ -299,7 +304,7 @@ let create
   in
   ({ cache_to_mem
    ; walker_to_mem = translation.walker_to_mem
-   ; to_pipeline = { load_data; stall }
+   ; to_pipeline = { load_data; stall; fault = translation.result.fault }
    }
    : _ O.t)
 ;;

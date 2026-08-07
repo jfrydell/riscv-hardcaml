@@ -37,6 +37,9 @@ module To_pipe = struct
     { insn : 'a [@bits 32]
     ; pc : 'a [@bits addr_width] (** Address of the instruction that was just fetched. *)
     ; valid : 'a
+    ; fault : 'a
+    (** A memory access fault occurred for the fetched address, so no [valid] instruction
+        will be produced. *)
     }
   [@@deriving hardcaml]
 end
@@ -91,8 +94,8 @@ let create
       ; walker_from_mem
       }
   in
-  (* TODO: replace this temporary behavior with an instruction-access PMA fault. *)
-  let%hw active_pa = mux2 translation.result.io (zero addr_width) translation.result.pa in
+  let%hw fault = translation.result.fault in
+  let%hw active_pa = translation.result.pa in
   let%hw translation_stall = translation.result.stall in
   active_pc <-- Types.Clocking.reg clocking next_pc;
   let%hw active_tag = extract_tag active_pa in
@@ -123,7 +126,7 @@ let create
   let%hw tag_match =
     ~:translation_stall &&: read_metadata.valid &&: (active_tag ==: read_metadata.tag)
   in
-  stall <-- ~:tag_match;
+  stall <-- ~:(tag_match ||: fault);
   miss <-- (~:translation_stall &&: ~:tag_match);
   let data_mem =
     Ram.create
@@ -158,7 +161,7 @@ let create
        ; size = zero 2
        ; last = gnd
        }
-   ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match }
+   ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match; fault }
    ; walker_to_mem = translation.walker_to_mem
    }
    : _ O.t)

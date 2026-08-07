@@ -4,6 +4,17 @@ open! Core
 open Hardcaml
 open Signal
 
+(** Exceptional conditions detected throughout the datapath. *)
+module Triggers = struct
+  type 'a t =
+    { fetch_fault : 'a
+    ; memory_fault : 'a
+    ; branch_unaligned : 'a
+    ; access_unaligned : 'a
+    }
+  [@@deriving hardcaml]
+end
+
 (** Info needed by trap & CSR logic to trigger and process an exception. *)
 module Exception_request = struct
   type 'a t =
@@ -20,6 +31,7 @@ module I = struct
     ; decoded : 'a Decoded.t
     ; rs1 : 'a [@bits 32]
     ; csrs : 'a Csrs.t
+    ; triggers : 'a Triggers.t
     }
   [@@deriving hardcaml]
 end
@@ -34,7 +46,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ insn; decoded; rs1; csrs } : _ I.t) =
+let create scope ({ insn; decoded; rs1; csrs; triggers = _ } : _ I.t) =
   let%hw is_non_csr_system =
     decoded.opcode ==: Riscv_isa.Of_signal.Op.env &&: (decoded.funct3 ==:. 0)
   in
