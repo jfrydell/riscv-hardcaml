@@ -2,8 +2,6 @@ open! Core
 open! Hardcaml
 open Signal
 
-let vpn_part_width = 10
-
 module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
@@ -27,15 +25,15 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   let%hw accept = ~:busy &&: from_tlb.valid in
   let%hw vpn = Types.Clocking.reg clocking ~enable:accept from_tlb.vpn in
   let%hw response = read_from_mem.valid in
-  (* 0 means translating high order bits via satp, 1 means lower bits based on returned PPN. *)
-  let%hw level = wire 1 in
-  let%hw prev_level = Types.Clocking.reg clocking level in
-  level
-  <-- (prev_level
+  (* 1 means translating high order bits via satp, 0 means lower bits based on returned PPN. *)
+  let%hw req_level = wire 1 in
+  let%hw resp_level = Types.Clocking.reg clocking req_level in
+  req_level
+  <-- (resp_level
        (* The cycle we get a response, increment level by 1. *)
-       |> mux2 response (prev_level +:. 1)
+       |> mux2 response (resp_level -:. 1)
        (* Once we're processing a new request, restart at 0. *)
-       |> mux2 (Types.Clocking.reg clocking accept) (zero 1));
+       |> mux2 (Types.Clocking.reg clocking accept) (one 1));
   let%hw.Iface.Pte.Of_signal pte = Iface.Pte.of_bitvector read_from_mem.data in
   let%hw incoming_base_ppn = pte.ppn @: zero Iface.page_offset_width in
   let%hw base_ppn =
@@ -45,27 +43,39 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
       (mux2 accept state.page_table_root incoming_base_ppn)
   in
   let%hw offset =
-    mux level
+    mux req_level
     @@ List.init 2 ~f:(fun l ->
       vpn
-      |> drop_top ~width:(vpn_part_width * l)
-      |> sel_top ~width:vpn_part_width
+      |> drop_bottom ~width:(Iface.vpn_part_width * l)
+      |> sel_bottom ~width:Iface.vpn_part_width
       |> uresize ~width:Iface.addr_width
       |> sll ~by:2)
   in
   let%hw read_addr = base_ppn +: offset in
-  let%hw.Iface.Tlb_entry.Of_signal leaf_entry =
-    Iface.Tlb_entry.of_pte ~vpn ~asid:state.asid pte
+  (* Process response, determining when we have translated successfully or encountered an error. *)
+  let%hw error = ~:(pte.valid) ||: (pte.write &&: ~:(pte.read)) in
+  let%hw invalid_superpage =
+    mux resp_level
+    @@ List.init 2 ~f:(fun l ->
+      if l = 0
+      then gnd
+      else sel_bottom ~width:(Iface.vpn_part_width * l) pte.ppn |> no_bits_set |> ( ~: ))
   in
-  let%hw last_response = prev_level ==:. 1 &&: response in
-  busy
-  <-- Utils.sr
-        ~set:accept
-        ~reset:last_response
-        clocking
-        ~style:`Mealy_reset
-        ~priority:`Set;
-  ({ to_tlb = { entry = leaf_entry; valid = last_response }
+  let%hw.Iface.Tlb_entry.Of_signal entry =
+    Iface.Tlb_entry.of_pte
+      ~level:resp_level
+      ~vpn
+      ~asid:state.asid
+      { pte with valid = pte.valid &&: ~:error &&: ~:invalid_superpage }
+  in
+  (* Finish translation if we've received page with R or X (superpage), on
+     an error, or this was the last level (if this PTE incorrectly has R=X=0,
+     pointing to another level, we'll page fault anyway). *)
+  let%hw finish =
+    response &&: (resp_level ==:. 0 ||: error ||: pte.read ||: pte.execute)
+  in
+  busy <-- Utils.sr ~set:accept ~reset:finish clocking ~style:`Mealy_reset ~priority:`Set;
+  ({ to_tlb = { entry; valid = finish }
    ; read_to_mem =
        { valid = busy
        ; uncacheable = vdd

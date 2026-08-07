@@ -3,10 +3,12 @@ open! Hardcaml
 open Signal
 
 (* TODO: change physical addr width to 34? *)
+(* TODO: some of these in Memory_bus? *)
 let addr_width = 32
 let page_offset_width = 12
 let vpn_width = addr_width - page_offset_width
 let ppn_width = addr_width - page_offset_width
+let vpn_part_width = 10
 let asid_width = 9
 
 (** The bits of a 32-bit Sv32 page-table entry used by this simplified MMU. *)
@@ -54,12 +56,21 @@ module Tlb_entry = struct
   [@@deriving hardcaml]
 
   (** Build a cached translation from a VPN and decoded PTE. The ASID is optional for
-      address-only conversions; the page-table walker supplies it when filling the TLB. *)
-  let of_pte ?asid ~vpn (pte : Signal.t Pte.t) : Signal.t t =
+      address-only conversions; the page-table walker supplies it when filling the TLB.
+
+      If [level > 0], lower PPN bits are filled in from the VPN for superpage translation. *)
+  let of_pte ?asid ~level ~vpn (pte : Signal.t Pte.t) : Signal.t t =
+    let ppn =
+      mux level
+      @@ List.init 2 ~f:(fun l ->
+        if l = 0
+        then pte.ppn
+        else drop_bottom ~width:(10 * l) pte.ppn @: sel_bottom ~width:(10 * l) vpn)
+    in
     { vpn
-    ; ppn = pte.ppn
+    ; ppn
     ; asid = Option.value asid ~default:(zero asid_width)
-    ; valid = pte.valid
+    ; valid = pte.valid &&: (pte.read ||: ~:(pte.write))
     ; read = pte.read
     ; write = pte.write
     ; execute = pte.execute
