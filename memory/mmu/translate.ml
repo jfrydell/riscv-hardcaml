@@ -65,6 +65,7 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
     { pa = mux2 stall (zero addr_width) pa
     ; io = pa.:(addr_width - 1)
     ; valid = vdd
+    ; fault = gnd
     ; stall
     }
   in
@@ -85,7 +86,7 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
         (mux2 accept stall_amount @@ mux2 stall (stall_cycles -:. 1) (zero 2));
   (* Output zeros when stalling for testing. *)
   let%hw pa = mux2 stall (zero 32) result.pa in
-  ({ pa; io = pa.:(addr_width - 1); valid = ~:stall &&: result.valid; stall }
+  ({ pa; io = pa.:(addr_width - 1); valid = ~:stall &&: result.valid; fault = gnd; stall }
    : _ Iface.Translation.t)
 ;;
 
@@ -104,6 +105,7 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
       ; walker_from_mem
       }
   in
+  let%hw effective_priv = Access_type.effective_priv ~state access_type in
   let%hw.Iface.Tlb_response.Of_signal tlb_from_walker =
     Iface.Tlb_response.Of_signal.wires ()
   in
@@ -114,6 +116,13 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
       ; state
       ; va = { va with valid = va.valid &&: translating }
       ; from_walker = tlb_from_walker
+      ; required_permission =
+          { read = Access_type.Of_signal.is access_type Load
+          ; write = Access_type.Of_signal.is access_type Store
+          ; execute = Access_type.Of_signal.is access_type Instruction
+          ; user = effective_priv ==:. 0
+          }
+      ; require_superuser = effective_priv ==:. 1 &&: ~:(state.supervisor_user_access)
       }
   in
   let%hw.Walker.O.Of_signal walker_out =
@@ -128,7 +137,7 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
      in-flight at once. *)
   let%hw translating_unlatched =
     State.Translation_mode.Binary.Of_signal.is state.translation_mode Sv32
-    &&: ~:(Access_type.effective_priv ~state access_type).:(1)
+    &&: ~:effective_priv.:(1)
   in
   translating
   <-- Types.Clocking.cut_through_reg ~enable:~:stall clocking translating_unlatched;

@@ -11,15 +11,23 @@ let ppn_width = addr_width - page_offset_width
 let vpn_part_width = 10
 let asid_width = 9
 
+(** Permission-setting bits in a PTE/TLB. *)
+module Permission = struct
+  type 'a t =
+    { read : 'a
+    ; write : 'a
+    ; execute : 'a
+    ; user : 'a
+    }
+  [@@deriving hardcaml]
+end
+
 (** The bits of a 32-bit Sv32 page-table entry used by this simplified MMU. *)
 module Pte = struct
   type 'a t =
     { ppn : 'a [@bits ppn_width]
     ; valid : 'a
-    ; read : 'a
-    ; write : 'a
-    ; execute : 'a
-    ; user : 'a
+    ; perm : 'a Permission.t
     ; global : 'a
     }
   [@@deriving hardcaml]
@@ -29,10 +37,7 @@ module Pte = struct
   let of_bitvector pte : Signal.t t =
     { ppn = pte |> drop_bottom ~width:10 |> sel_bottom ~width:ppn_width
     ; valid = pte.:(0)
-    ; read = pte.:(1)
-    ; write = pte.:(2)
-    ; execute = pte.:(3)
-    ; user = pte.:(4)
+    ; perm = { read = pte.:(1); write = pte.:(2); execute = pte.:(3); user = pte.:(4) }
     ; global = pte.:(5)
     }
   ;;
@@ -46,12 +51,12 @@ module Tlb_entry = struct
     { vpn : 'a [@bits vpn_width]
     ; ppn : 'a [@bits ppn_width]
     ; asid : 'a [@bits asid_width]
-    ; valid : 'a
-    ; read : 'a
-    ; write : 'a
-    ; execute : 'a
-    ; user : 'a
+    ; perm : 'a Permission.t
     ; global : 'a
+    ; entry_valid : 'a
+    (** This refers to whether this entry in the TLB BRAM is a valid entry from the PT.
+        This is not PTE.valid, which is instead reflected in the [perm] bits (all zero if
+        PTE.valid is false). *)
     }
   [@@deriving hardcaml]
 
@@ -70,12 +75,9 @@ module Tlb_entry = struct
     { vpn
     ; ppn
     ; asid = Option.value asid ~default:(zero asid_width)
-    ; valid = pte.valid &&: (pte.read ||: ~:(pte.write))
-    ; read = pte.read
-    ; write = pte.write
-    ; execute = pte.execute
-    ; user = pte.user
+    ; perm = Permission.map ~f:(( &: ) pte.valid) pte.perm
     ; global = pte.global
+    ; entry_valid = vdd
     }
   ;;
 end
@@ -99,31 +101,18 @@ module Tlb_response = struct
 end
 
 (** The result of address translation, sent to the CPU. Unless noted otherwise, guaranteed
-    to be held stable until the next translation request arrives. TODO: extend to support
-    page faults *)
+    to be held stable until the next translation request arrives or memory state changes. *)
 module Translation = struct
   type 'a t =
     { pa : 'a [@bits addr_width] (** The translated address. *)
+    ; valid : 'a
+    (** The address was translated successfully and can be accessed at [pa]. *)
+    ; fault : 'a
+    (** There was an error in the access translation, so a page fault should be raised. *)
     ; io : 'a (** The address is in the uncachable I/O region. *)
-    ; valid : 'a (** The address was translated successfully. *)
     ; stall : 'a
     (** The last requested translation is in progress, so the values output here are
         invalid. *)
     }
   [@@deriving hardcaml]
-
-  (** Implement correct timing behavior, latching output when a response arrives and
-      raising stall between request and response. Ignores input [stall] value, and all
-      inputs when [response_valid] is low. *)
-  let with_latches ~accept_request ~response_valid ~clocking t =
-    { (map t ~f:(Types.Clocking.cut_through_reg clocking ~enable:response_valid)) with
-      stall =
-        Utils.sr
-          ~set:accept_request
-          ~reset:response_valid
-          clocking
-          ~style:`Mealy_reset
-          ~priority:`Set
-    }
-  ;;
 end

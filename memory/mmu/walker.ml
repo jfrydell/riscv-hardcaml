@@ -53,7 +53,7 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   in
   let%hw read_addr = base_ppn +: offset in
   (* Process response, determining when we have translated successfully or encountered an error. *)
-  let%hw error = ~:(pte.valid) ||: (pte.write &&: ~:(pte.read)) in
+  let%hw error = ~:(pte.valid) ||: (pte.perm.write &&: ~:(pte.perm.read)) in
   let%hw invalid_superpage =
     mux resp_level
     @@ List.init 2 ~f:(fun l ->
@@ -72,7 +72,7 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
      an error, or this was the last level (if this PTE incorrectly has R=X=0,
      pointing to another level, we'll page fault anyway). *)
   let%hw finish =
-    response &&: (resp_level ==:. 0 ||: error ||: pte.read ||: pte.execute)
+    response &&: (resp_level ==:. 0 ||: error ||: pte.perm.read ||: pte.perm.execute)
   in
   busy <-- Utils.sr ~set:accept ~reset:finish clocking ~style:`Mealy_reset ~priority:`Set;
   ({ to_tlb = { entry; valid = finish }

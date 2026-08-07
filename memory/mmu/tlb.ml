@@ -20,6 +20,11 @@ module I = struct
     ; state : 'a State.t
     ; va : 'a With_valid.t [@bits Iface.addr_width]
     ; from_walker : 'a Iface.Tlb_response.t
+    ; required_permission : 'a Iface.Permission.t
+    (** Bits of permission which must be set to avoid a fault; latched with [va]. *)
+    ; require_superuser : 'a
+    (** Requires the U bit to be clear to access (set for supervisor with SUM=0), latched
+        with [va]. *)
     }
   [@@deriving hardcaml]
 end
@@ -32,35 +37,36 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create scope ({ clocking; state; va; from_walker } : _ I.t) =
-  (* [busy] remains asserted from accepting a VA until either a hit is found or
-     a walker response arrives. *)
+let create scope (i : _ I.t) =
+  (* [busy] remains asserted from accepting a VA until an entry is loaded from
+     the PT. At the moment, all entries from the PT are written to the TLB,
+     even invalid ones, so all accesses eventually "hit" (just possibly on an
+     entry with valid=0). To make this work, we use Tlb_entry.entry_valid to
+     mean "this entry corresponds to one from the PT", even if that PTE had
+     V=0, in which case all TLB pemissions are 0. This maybe isn't ideal, as it
+     pollutes the TLB with faulting accesses, but it simplifies this logic (and
+     if that's happening often, arguably we do want to cache those faults?). *)
   let%hw busy = wire 1 in
-  let%hw.With_valid.Of_signal active =
-    With_valid.map ~f:(Types.Clocking.reg clocking ~enable:~:busy) va
-  in
-  let%hw active_vpn = vpn_of_va active.value in
-  let%hw accept = ~:busy &&: va.valid in
-  let%hw.State.Of_signal state_latched =
-    State.map ~f:(Types.Clocking.reg clocking ~enable:accept) state
-  in
-  let%hw fill = from_walker.valid in
+  let%hw accept = ~:busy &&: i.va.valid in
+  let%hw.I.Of_signal active = I.map ~f:(Types.Clocking.reg i.clocking ~enable:accept) i in
+  let%hw active_vpn = vpn_of_va active.va.value in
+  let%hw fill = i.from_walker.valid in
   let%hw.Tlb_entry.Of_signal loaded_entry =
     let mem =
       Ram.create
         ~collision_mode:Write_before_read
         ~size:num_entries
         ~write_ports:
-          [| { write_clock = clocking.clock
+          [| { write_clock = i.clocking.clock
              ; write_enable = fill
-             ; write_address = index_of_vpn from_walker.entry.vpn
-             ; write_data = Tlb_entry.Of_signal.pack from_walker.entry
+             ; write_address = index_of_vpn i.from_walker.entry.vpn
+             ; write_data = Tlb_entry.Of_signal.pack i.from_walker.entry
              }
           |]
         ~read_ports:
-          [| { read_clock = clocking.clock
+          [| { read_clock = i.clocking.clock
              ; read_enable = accept
-             ; read_address = index_of_vpn (vpn_of_va va.value)
+             ; read_address = index_of_vpn (vpn_of_va i.va.value)
              }
           |]
         ~name:"tlb_entries"
@@ -69,31 +75,37 @@ let create scope ({ clocking; state; va; from_walker } : _ I.t) =
     Tlb_entry.Of_signal.unpack mem.(0)
   in
   let%hw vpn_match = loaded_entry.vpn ==: active_vpn in
-  let%hw asid_match = loaded_entry.asid ==: state_latched.asid in
+  let%hw asid_match = loaded_entry.asid ==: active.state.asid in
   let%hw hit =
-    active.valid
-    &&: loaded_entry.valid
+    active.va.valid
+    &&: loaded_entry.entry_valid
     &&: vpn_match
     &&: (asid_match ||: loaded_entry.global)
   in
-  let%hw miss = busy &&: ~:hit in
-  let%hw.Tlb_entry.Of_signal result_entry =
-    Tlb_entry.Of_signal.mux2 fill from_walker.entry loaded_entry
+  let%hw result_pa = physical_address ~va:active.va.value ~entry:loaded_entry in
+  (* We fault if entry doesn't have all requested permissions, or if U is set
+     for supervisor-only accesses. Other access faults in the PT are reflected
+     in walker filling the TLB with a permission-less entry. *)
+  let%hw missing_permission =
+    Iface.Permission.map2 active.required_permission loaded_entry.perm ~f:(fun r p ->
+      r &: ~:p)
+    |> Iface.Permission.to_list
+    |> reduce ~f:( ||: )
   in
-  let%hw result_valid = hit ||: fill in
-  let%hw result_value = physical_address ~va:active.value ~entry:result_entry in
-  (* Stall until we get response back, and latch result once that happens. *)
-  busy
-  <-- Utils.sr ~set:accept ~reset:result_valid clocking ~style:`Mealy_reset ~priority:`Set;
-  let hold_when_valid = Types.Clocking.cut_through_reg clocking ~enable:result_valid in
-  let%hw result_pa = hold_when_valid result_value in
+  let%hw result_fault =
+    missing_permission ||: (loaded_entry.perm.user &&: active.require_superuser)
+  in
+  (* Stall until response from walker causes us to hit, and latch result once that happens. *)
+  busy <-- Utils.sr ~set:accept ~reset:hit i.clocking ~style:`Mealy_reset ~priority:`Set;
+  let hold_after_hit = Types.Clocking.cut_through_reg i.clocking ~enable:hit in
   ({ result =
-       { pa = result_pa
+       { pa = hold_after_hit result_pa
+       ; valid = hold_after_hit ~:result_fault
+       ; fault = hold_after_hit result_fault
        ; io = result_pa.:(Iface.addr_width - 1)
-       ; valid = vdd
        ; stall = busy
        }
-   ; to_walker = { vpn = active_vpn; valid = miss }
+   ; to_walker = { vpn = active_vpn; valid = busy }
    }
    : _ O.t)
 ;;
