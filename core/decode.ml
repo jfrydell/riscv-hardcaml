@@ -88,6 +88,7 @@ let create scope (insn : _ I.t) =
          ~f7second:funct7.:(5)
          funct3
    ; is_csr
+   ; csr_addr = insn.:[31, 20]
    ; csr_writes =
        funct3.:[1, 0] ==:. 1 ||: (funct3.:[1, 0] >=:. 2 &&: (insn.:[19, 15] <>:. 0))
    ; is_ecall = insn ==: Riscv_isa.Of_signal.System_insn.ecall

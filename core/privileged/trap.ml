@@ -110,8 +110,9 @@ let create
     Decode_trap.hierarchical
       ~scope
       { epc
-      ; trap_value = mux2 start.exception_ detected.exception_request.value (zero 32)
-      ; exception_cause = detected.exception_request.cause
+      ; trap_value =
+          mux2 start.exception_ detected.exception_request.value.value (zero 32)
+      ; exception_cause = detected.exception_request.value.cause
       ; interrupt_cause = interrupt_request.value
       ; csrs
       ; trap = Action.is_trap start

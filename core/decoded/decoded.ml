@@ -51,6 +51,7 @@ type 'a t =
   ; funct7 : 'a [@bits 7]
   ; optype : 'a Optype.t
   ; is_csr : 'a
+  ; csr_addr : 'a [@bits 12]
   ; csr_writes : 'a (** If [is_csr] is set, determines if the CSR writes. *)
   ; is_ecall : 'a
   ; is_ebreak : 'a
