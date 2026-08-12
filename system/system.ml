@@ -23,6 +23,52 @@ module Access_handling_port = struct
   [@@deriving hardcaml]
 end
 
+(** Represents a bi-directional transformation of addresses, allowing memories to see
+    different addresses to those they are mapped to by the CPU. *)
+module Address_transform = struct
+  type t =
+    { cpu_to_mem : Signal.t -> Signal.t
+    ; mem_to_cpu : Signal.t -> Signal.t
+    }
+
+  let identity = { cpu_to_mem = Fn.id; mem_to_cpu = Fn.id }
+
+  (** Transform one contiguous range of a given size into another. If alignment permits,
+      just masks bits (assuming all transformed addresses are within [size_bytes] of their
+      respective start). *)
+  let move_range ~cpu_start ~mem_start ~size_bytes : t =
+    let open Signal in
+    let common_bits =
+      Int.min Memory.Bus.addr_width (Int.ctz (cpu_start lxor mem_start))
+    in
+    let window = Int.pow 2 common_bits in
+    let use_upper_bits =
+      size_bytes <= window && (cpu_start land (window - 1)) + size_bytes <= window
+    in
+    if Int.equal cpu_start mem_start
+    then { cpu_to_mem = Fn.id; mem_to_cpu = Fn.id }
+    else if use_upper_bits
+    then (
+      let replace upper address =
+        let upper = of_unsigned_int ~width:(Memory.Bus.addr_width - common_bits) upper in
+        if common_bits = 0
+        then upper
+        else concat_msb [ upper; sel_bottom ~width:common_bits address ]
+      in
+      { cpu_to_mem = replace (mem_start lsr common_bits)
+      ; mem_to_cpu = replace (cpu_start lsr common_bits)
+      })
+    else (
+      let offset value address =
+        let value = of_unsigned_int ~width:Memory.Bus.addr_width value in
+        address +: value
+      in
+      { cpu_to_mem = offset (mem_start - cpu_start)
+      ; mem_to_cpu = offset (cpu_start - mem_start)
+      })
+  ;;
+end
+
 module Make (Config : Config) = struct
   module Cpu = Cpu.Make (Config.Cpu)
 
@@ -74,6 +120,7 @@ module Make (Config : Config) = struct
       handled by previous calls to [add_access_handler]. [to_bus] is the unassigned wires
       issuing writes, and [from_bus] is the response. *)
   let add_access_handler
+    ?(address_transform = Address_transform.identity)
     ~addr_pred
     ({ scope; clocking; open_handler = prev_open_handler; _ } as t)
     =
@@ -83,6 +130,11 @@ module Make (Config : Config) = struct
     let%hw.Access_handling_port.Of_signal connected_handler =
       Access_handling_port.Of_signal.wires ()
     in
+    let%hw.Memory.Bus.From_mem.Of_signal connected_to_bus_transformed =
+      { connected_handler.to_bus with
+        addr = address_transform.mem_to_cpu connected_handler.to_bus.addr
+      }
+    in
     (* New connected handler only sees addresses in predicate, and new open port gets the remainder. *)
     let%hw.Memory.Bus.Router.O.Of_signal router =
       Memory.Bus.Router.hierarchical
@@ -90,12 +142,14 @@ module Make (Config : Config) = struct
         ~scope
         { clocking
         ; in_req = prev_open_handler.from_bus
-        ; in_resp_t = connected_handler.to_bus
+        ; in_resp_t = connected_to_bus_transformed
         ; in_resp_f = open_handler.to_bus
         }
     in
     Memory.Bus.From_mem.Of_signal.assign prev_open_handler.to_bus router.out_resp;
-    Memory.Bus.To_mem.Of_signal.assign connected_handler.from_bus router.out_req_t;
+    Memory.Bus.To_mem.Of_signal.assign
+      connected_handler.from_bus
+      { router.out_req_t with addr = address_transform.cpu_to_mem router.out_req_t.addr };
     Memory.Bus.To_mem.Of_signal.assign open_handler.from_bus router.out_req_f;
     t.open_handler <- open_handler;
     connected_handler
@@ -140,14 +194,21 @@ module Make (Config : Config) = struct
     t
   ;;
 
-  (** Attach a BRAM-backed main memory handling addresses in the internal [0, size_bytes). *)
-  let attach_bram_memory ~size_bytes t =
+  (** Attach a BRAM-backed main memory handling addresses in the interval [start_addr, start_addr + size_bytes). *)
+  let attach_bram_memory ?(start_addr = 0) ~size_bytes t =
     let module M =
       Memory.Main_memory_bram.Make (struct
         let capacity = size_bytes
       end)
     in
-    let port = add_access_handler ~addr_pred:(fun a -> Signal.(a <:. size_bytes)) t in
+    let port =
+      add_access_handler
+        ~address_transform:
+          (Address_transform.move_range ~cpu_start:start_addr ~mem_start:0 ~size_bytes)
+        ~addr_pred:(fun a ->
+          Signal.(a >=:. start_addr &&: (a <:. start_addr + size_bytes)))
+        t
+    in
     let mem =
       M.hierarchical ~scope:t.scope { clocking = t.clocking; from_cpu = port.from_bus }
     in
