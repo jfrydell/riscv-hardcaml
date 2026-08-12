@@ -112,7 +112,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
      to go to D). *)
   (* TODO: probably should stop fetching while a trap is active. fine to keep doing it, as we will throw away those instructions at D. *)
   let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
-    { pc = mux2 stall.f pc_reg pc_to_fetch }
+    { pc = { value = mux2 stall.f pc_reg pc_to_fetch; valid = vdd } }
   in
   stall_fetch <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
   let%hw.Pipeline.Pipelined_word.Of_signal insn =

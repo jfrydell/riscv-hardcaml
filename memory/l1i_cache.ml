@@ -29,7 +29,7 @@ let insn_from_word ~word ~word_offset =
 ;;
 
 module From_pipe = struct
-  type 'a t = { pc : 'a [@bits addr_width] } [@@deriving hardcaml]
+  type 'a t = { pc : 'a With_valid.t [@bits addr_width] } [@@deriving hardcaml]
 end
 
 module To_pipe = struct
@@ -74,20 +74,21 @@ end
 
 let create
   scope
-  ({ clocking; mmu_state; from_pipeline = { pc }; cache_from_mem; walker_from_mem } :
-    _ I.t)
+  ({ clocking; mmu_state; from_pipeline; cache_from_mem; walker_from_mem } : _ I.t)
   =
   (* Stall = waiting for translation or fill, miss = translation done but waiting for fill. *)
   let%hw stall = wire 1 in
   let%hw miss = wire 1 in
-  let%hw active_pc = wire addr_width in
-  let%hw next_pc = mux2 stall active_pc pc in
+  let%hw.With_valid.Of_signal active_pc = With_valid.Of_signal.wires addr_width in
+  let%hw.With_valid.Of_signal next_pc =
+    With_valid.map2 ~f:(mux2 stall) active_pc from_pipeline.pc
+  in
   let%hw.Mmu.Translate.O.Of_signal translation =
     Mmu.Translate.hierarchical
       ~scope
       { clocking
       ; state = mmu_state
-      ; va = { valid = ~:miss; value = pc }
+      ; va = { valid = next_pc.valid &&: ~:miss; value = next_pc.value }
       ; access_type =
           Mmu.Translate.Access_type.Of_signal.of_enum
             Mmu.Translate.Access_type.Cases.Instruction
@@ -97,7 +98,7 @@ let create
   let%hw fault = translation.result.fault in
   let%hw active_pa = translation.result.pa in
   let%hw translation_stall = translation.result.stall in
-  active_pc <-- Types.Clocking.reg clocking next_pc;
+  With_valid.iter2 ~f:(fun a n -> a <-- Types.Clocking.reg clocking n) active_pc next_pc;
   let%hw active_tag = extract_tag active_pa in
   let%hw update_tag = wire 1 in
   let%hw.Metadata.Of_signal read_metadata =
@@ -115,7 +116,7 @@ let create
         ~read_ports:
           [| { read_clock = clocking.clock
              ; read_enable = vdd
-             ; read_address = extract_set_index next_pc
+             ; read_address = extract_set_index next_pc.value
              }
           |]
         ~name:"tags"
@@ -124,10 +125,13 @@ let create
     Metadata.Of_signal.unpack mem.(0)
   in
   let%hw tag_match =
-    ~:translation_stall &&: read_metadata.valid &&: (active_tag ==: read_metadata.tag)
+    active_pc.valid
+    &&: ~:translation_stall
+    &&: read_metadata.valid
+    &&: (active_tag ==: read_metadata.tag)
   in
-  stall <-- ~:(tag_match ||: fault);
-  miss <-- (~:translation_stall &&: ~:tag_match);
+  stall <-- (active_pc.valid &&: ~:(tag_match ||: fault));
+  miss <-- (active_pc.valid &&: ~:translation_stall &&: ~:tag_match);
   let data_mem =
     Ram.create
       ~collision_mode:Write_before_read
@@ -142,7 +146,7 @@ let create
       ~read_ports:
         [| { read_clock = clocking.clock
            ; read_enable = vdd
-           ; read_address = extract_word next_pc
+           ; read_address = extract_word next_pc.value
            }
         |]
       ~name:"data"
@@ -161,7 +165,7 @@ let create
        ; size = zero 2
        ; last = gnd
        }
-   ; to_pipeline = { insn = insn_value; pc = active_pc; valid = tag_match; fault }
+   ; to_pipeline = { insn = insn_value; pc = active_pc.value; valid = tag_match; fault }
    ; walker_to_mem = translation.walker_to_mem
    }
    : _ O.t)
