@@ -38,7 +38,8 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create scope (i : _ I.t) =
+let create ?(initial_pc = 0) scope (i : _ I.t) =
+  let initial_pc = of_int_trunc ~width:32 initial_pc in
   (* Pipeline stuff *)
   (* Stall signals: stall decode on hazard, fetch when insn not valid, memory
      on a load miss. *)
@@ -95,8 +96,9 @@ let create scope (i : _ I.t) =
     mux2 pc_update.valid pc_update.value
     @@ mux2 (Types.Clocking.reg i.clocking stall.f) pc_to_fetch_latch (pc_reg +:. 4)
   in
-  pc_to_fetch_latch <-- Types.Clocking.reg i.clocking pc_to_fetch;
-  pc_reg <-- Types.Clocking.reg i.clocking ~enable:~:(stall.f) pc_to_fetch;
+  pc_to_fetch_latch <-- Types.Clocking.reg i.clocking ~clear_to:initial_pc pc_to_fetch;
+  pc_reg
+  <-- Types.Clocking.reg i.clocking ~clear_to:initial_pc ~enable:~:(stall.f) pc_to_fetch;
   let%hw.Pipeline.Pipelined_word.Of_signal pc =
     Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:F pc_reg
   in
@@ -342,7 +344,7 @@ let create scope (i : _ I.t) =
     }
 ;;
 
-let hierarchical =
+let hierarchical ?initial_pc =
   let module H = Hierarchy.In_scope (I) (O) in
-  H.hierarchical create
+  H.hierarchical (create ?initial_pc)
 ;;

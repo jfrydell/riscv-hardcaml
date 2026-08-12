@@ -164,7 +164,7 @@ module Make (Config : Config) = struct
   (** Get interrupt input wire, initially unassigned. *)
   let interrupt { request_interrupt; _ } = request_interrupt
 
-  let create ~scope ~clocking =
+  let create ?initial_pc ~scope ~clocking () =
     (* Start with an I/O bus unattached to anything. Each of these wires acts as the already-connected [from_bus] from one side's open port, and the unassigned wire [to_bus] for the other. *)
     let%hw.Memory.Bus.To_mem.Of_signal emitter_to_handler =
       Memory.Bus.To_mem.Of_signal.wires ()
@@ -187,6 +187,7 @@ module Make (Config : Config) = struct
     let cpu =
       Cpu.hierarchical
         ~scope
+        ?initial_pc
         { clocking; request_interrupt; from_mem = cpu_port.from_bus }
     in
     Memory.Bus.To_mem.Of_signal.assign cpu_port.to_bus cpu.to_mem;

@@ -1,13 +1,16 @@
 open Core
 open Hardcaml
 
+let bram_start = Int32.of_int_exn 0x40000000
+let bram_size = 0x8000
+
 let preload_program sim memory =
   Hashtbl.iter_keys memory ~f:(fun addr ->
-    if Int32.(addr < zero || addr >= of_int_exn 0x8000)
+    if Int32.(addr < bram_start || addr >= bram_start + of_int_exn bram_size)
     then failwithf "interrupt test program outside BRAM: 0x%lx" addr ());
   let words = Int.Table.create () in
   Hashtbl.iteri memory ~f:(fun ~key:addr ~data:byte ->
-    let addr = Int32.to_int_exn addr in
+    let addr = Int32.to_int_exn Int32.(addr - bram_start) in
     let bytes_per_word = Memory.Bus.data_width / 8 in
     let word_address = addr / bytes_per_word in
     let shift = 8 * (addr % bytes_per_word) in

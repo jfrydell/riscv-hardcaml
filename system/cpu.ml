@@ -38,7 +38,9 @@ module Make (Config : Config) = struct
     [@@deriving hardcaml]
   end
 
-  let create scope ({ clocking; request_interrupt; from_mem } : _ I.t) : _ O.t =
+  let create ?(initial_pc = 0) scope ({ clocking; request_interrupt; from_mem } : _ I.t)
+    : _ O.t
+    =
     (* Instantiate core, with wires for L1 cache outputs. *)
     let%hw.Memory.L1d_cache.To_pipe.Of_signal core_from_l1d =
       Memory.L1d_cache.To_pipe.Of_signal.wires ()
@@ -49,6 +51,7 @@ module Make (Config : Config) = struct
     let%hw.Riscv_core.Cpu.O.Of_signal core =
       Riscv_core.Cpu.hierarchical
         ~scope
+        ~initial_pc
         { clocking
         ; from_l1d = core_from_l1d
         ; from_l1i = core_from_l1i
@@ -143,8 +146,8 @@ module Make (Config : Config) = struct
     }
   ;;
 
-  let hierarchical =
+  let hierarchical ?initial_pc =
     let module H = Hierarchy.In_scope (I) (O) in
-    H.hierarchical create
+    H.hierarchical (create ?initial_pc)
   ;;
 end

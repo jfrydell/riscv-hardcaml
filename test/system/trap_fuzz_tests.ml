@@ -3,6 +3,9 @@ open Hardcaml
 open Riscv_isa.Insn
 open Trap_test_utils
 
+let bram_start = 0x40000000
+let bram_start_bits = Int32.of_int_exn bram_start
+
 module Interrupt_system = struct
   module System = Riscv_system.System.Make (struct
       module Cpu = struct
@@ -31,8 +34,8 @@ module Interrupt_system = struct
     end
 
     let create scope ({ clocking; button } : _ I.t) =
-      let system = System.create ~scope ~clocking in
-      System.attach_bram_memory ~size_bytes:0x8000 system;
+      let system = System.create ~initial_pc:bram_start ~scope ~clocking () in
+      System.attach_bram_memory ~start_addr:bram_start ~size_bytes:0x8000 system;
       let led_port = System.attach_mmio_register ~addr:0x80000000 system in
       let led_value =
         Types.Clocking.reg clocking ~enable:led_port.write.valid led_port.write.value
@@ -79,13 +82,13 @@ let mmio_interrupt_scenario_generator =
 let system_interrupt_program =
   let open Csr_address in
   program
-    [ ( 0
-      , [ Lui { rd = 2; imm = Int32.of_int_exn 0x8000 }
+    [ ( bram_start
+      , [ Lui { rd = 2; imm = Int32.of_int_exn 0x40008000 }
         ; Jal { rd = 1; imm = int 0x98 }
         ; addi ~rd:10 ~rs1:10 1
         ; Branch (Eq, { rs1 = 0; rs2 = 0; imm = int (-4) })
         ] )
-    ; ( 0x28
+    ; ( bram_start + 0x28
       , [ addi ~rd:2 ~rs1:2 (-16)
         ; Store (Word, { rs1 = 2; rs2 = 12; imm = int 12 })
         ; Store (Word, { rs1 = 2; rs2 = 13; imm = int 8 })
@@ -98,9 +101,9 @@ let system_interrupt_program =
         ; Load (Word, Unsigned, { rd = 12; rs1 = 15; imm = int 4 })
         ; addi ~rd:24 ~rs1:24 1
         ; Branch (Eq, { rs1 = 12; rs2 = 0; imm = int 20 })
-        ; Load (Word, Unsigned, { rd = 13; rs1 = 0; imm = int 0x200 })
+        ; Load (Word, Unsigned, { rd = 13; rs1 = 3; imm = int 0x200 })
         ; addi ~rd:13 ~rs1:13 1
-        ; Store (Word, { rs1 = 0; rs2 = 13; imm = int 0x200 })
+        ; Store (Word, { rs1 = 3; rs2 = 13; imm = int 0x200 })
         ; Store (Word, { rs1 = 15; rs2 = 13; imm = Int32.zero })
         ; Store (Word, { rs1 = 15; rs2 = 12; imm = int 4 })
         ; Load (Word, Unsigned, { rd = 12; rs1 = 2; imm = int 12 })
@@ -110,19 +113,20 @@ let system_interrupt_program =
         ; addi ~rd:2 ~rs1:2 16
         ; Mret
         ] )
-    ; ( 0x9c
-      , [ Lui { rd = 15; imm = Int32.of_string "0x80000000" }
+    ; ( bram_start + 0x9c
+      , [ Lui { rd = 3; imm = bram_start_bits }
+        ; Lui { rd = 15; imm = Int32.of_string "0x80000000" }
         ; addi ~rd:15 ~rs1:15 0
         ; addi ~rd:14 ~rs1:0 42
         ; Store (Word, { rs1 = 15; rs2 = 14; imm = Int32.zero })
-        ; addi ~rd:14 ~rs1:0 0x28
+        ; addi ~rd:14 ~rs1:3 0x28
         ; csrw mtvec 14
         ; addi ~rd:14 ~rs1:0 2047
         ; addi ~rd:14 ~rs1:14 1
         ; csrs mie 14
         ; addi ~rd:14 ~rs1:0 8
         ; csrs mstatus 14
-        ; Load (Word, Unsigned, { rd = 14; rs1 = 0; imm = int 0x200 })
+        ; Load (Word, Unsigned, { rd = 14; rs1 = 3; imm = int 0x200 })
         ; Store (Word, { rs1 = 15; rs2 = 14; imm = Int32.zero })
         ; Jalr { rd = 0; rs1 = 1; imm = Int32.zero }
         ] )

@@ -8,6 +8,8 @@ module System = Riscv_system.System.Make (struct
     end
   end)
 
+let bram_start = 0x40000000
+
 module Dut = struct
   module I = struct
     type 'a t =
@@ -26,9 +28,9 @@ module Dut = struct
   end
 
   let create scope ({ clocking; request_interrupt } : _ I.t) =
-    let system = System.create ~scope ~clocking in
+    let system = System.create ~initial_pc:bram_start ~scope ~clocking () in
     Signal.(System.interrupt system <-- request_interrupt);
-    System.attach_bram_memory ~size_bytes:0x8000 system;
+    System.attach_bram_memory ~start_addr:bram_start ~size_bytes:0x8000 system;
     let mmio = System.attach_mmio_register ~addr:0x80000000 system in
     let register_value =
       Types.Clocking.reg clocking ~enable:mmio.write.valid mmio.write.value
@@ -90,7 +92,8 @@ let%test_unit "system routes BRAM and MMIO accesses" =
   Cyclesim.cycle sim;
   inputs.clocking.clear := Bits.gnd;
   let memory =
-    Riscvemulate.State.init ~insns:program ~addr:Int32.zero |> Riscvemulate.State.memory
+    Riscvemulate.State.init ~insns:program ~addr:(Int32.of_int_exn bram_start)
+    |> Riscvemulate.State.memory
   in
   System_test_utils.preload_program sim memory;
   run_program sim ~insn_count:(List.length program);
