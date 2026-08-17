@@ -315,6 +315,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
           { insn = insn.m
           ; decoded = decoded.m
           ; rs1 = rs1val.m
+          ; memory_addr = rdval.m
           ; csrs
           ; triggers = exception_triggers
           }

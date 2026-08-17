@@ -33,6 +33,7 @@ module I = struct
     { insn : 'a [@bits 32]
     ; decoded : 'a Decoded.t
     ; rs1 : 'a [@bits 32] (** Value in rs1 for CSR write. *)
+    ; memory_addr : 'a [@bits 32] (** Effective virtual address for a load or store. *)
     ; csrs : 'a Csrs.t
     ; triggers : 'a Triggers.t
     }
@@ -88,7 +89,7 @@ let detect_illegal_insn scope ~(decoded : _ Decoded.t) ~(csrs : _ Csrs.t) =
   illegal_instruction
 ;;
 
-let create scope ({ insn; decoded; rs1; csrs; triggers } : _ I.t) =
+let create scope ({ insn; decoded; rs1; memory_addr; csrs; triggers } : _ I.t) =
   let%hw illegal_instruction =
     detect_illegal_insn (Scope.sub_scope scope "detect_illegal") ~csrs ~decoded
   in
@@ -127,7 +128,7 @@ let create scope ({ insn; decoded; rs1; csrs; triggers } : _ I.t) =
                   (decoded.opcode ==: Riscv_isa.Of_signal.Op.load)
                   (of_unsigned_int ~width:32 13)
                   (of_unsigned_int ~width:32 15)
-            ; value = zero 32
+            ; value = memory_addr
             }
         }
       ]

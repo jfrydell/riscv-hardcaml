@@ -170,8 +170,8 @@ let create
   let%hw.From_pipe.Of_signal active_access =
     { registered_access with
       addr = translation.result.pa
-    ; load = registered_access.load &&: ~:stall_translate
-    ; store = registered_access.store &&: ~:stall_translate
+    ; load = registered_access.load &&: translation.result.valid &&: ~:stall_translate
+    ; store = registered_access.store &&: translation.result.valid &&: ~:stall_translate
     }
   in
   (* Extract all cache addresses from the translated physical address. *)
@@ -302,9 +302,13 @@ let create
   let%hw.Memory_bus.To_mem.Of_signal cache_to_mem =
     Memory_bus.To_mem.Of_signal.mux2 read_to_mem.valid read_to_mem write_to_mem
   in
+  (* Only give fault for one cycle, stopping once we've received a new [registered_access] from the pipeline. *)
+  let%hw fault =
+    translation.result.fault &&: (registered_access.load ||: registered_access.store)
+  in
   ({ cache_to_mem
    ; walker_to_mem = translation.walker_to_mem
-   ; to_pipeline = { load_data; stall; fault = translation.result.fault }
+   ; to_pipeline = { load_data; stall; fault }
    }
    : _ O.t)
 ;;

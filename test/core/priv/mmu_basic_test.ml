@@ -8,14 +8,19 @@ let code_page_offset = 0x100
 let code_virtual_address = 0x01407000 + code_page_offset
 let load_virtual_address = 0x01408000
 let store_virtual_address = 0x01409000
+let invalid_load_virtual_address = 0x0140a000
 let load_value = 0x12345678
+let trap_vector = 0x80
+let faulting_pc = code_virtual_address + 0x18
 
 let test_instruction_fetch_through_sv32 () =
   let open Csr_address in
   let memory =
     program
       [ ( 0
-        , [ Lui { rd = 1; imm = Int32.min_value }
+        , [ addi ~rd:1 ~rs1:0 trap_vector
+          ; csrw mtvec 1
+          ; Lui { rd = 1; imm = Int32.min_value }
           ; addi ~rd:1 ~rs1:1 1
           ; csrw Privileged.Csrs.addresses.satp 1
           ; Lui { rd = 2; imm = int 0x01407000 }
@@ -30,6 +35,14 @@ let test_instruction_fetch_through_sv32 () =
           ; Lui { rd = 5; imm = int store_virtual_address }
           ; Store (Word, { rs1 = 5; rs2 = 4; imm = Int32.zero })
           ; Load (Word, Unsigned, { rd = 6; rs1 = 5; imm = Int32.zero })
+          ; Lui { rd = 7; imm = int invalid_load_virtual_address }
+          ; Load (Word, Unsigned, { rd = 8; rs1 = 7; imm = Int32.zero })
+          ] )
+      ; ( trap_vector
+        , [ csrr 20 mcause
+          ; csrr 21 mepc
+          ; csrr 22 mtval
+          ; csrr 23 mstatus
           ; addi ~rd:31 ~rs1:0 42
           ; halt
           ] )
@@ -51,6 +64,10 @@ let test_instruction_fetch_through_sv32 () =
   check_reg regs 31 42;
   check_reg regs 4 load_value;
   check_reg regs 6 load_value;
+  check_reg regs 20 13;
+  check_reg regs 21 faulting_pc;
+  check_reg regs 22 invalid_load_virtual_address;
+  check_reg regs 23 0;
   let stored_value =
     load ~memory:(Sim.Cpu.memory sim) ~addr:(int 0x5000) ~size:4 ~extend:Unsigned
   in
@@ -62,10 +79,17 @@ let test_instruction_fetch_through_sv32 () =
       [%message
         "Translated user instruction did not commit"
           (code_virtual_address : int)
+          (commits : int32 list)];
+  if List.mem commits (int faulting_pc) ~equal:Int32.equal
+  then
+    raise_s
+      [%message
+        "Faulting user load incorrectly committed"
+          (faulting_pc : int)
           (commits : int32 list)]
 ;;
 
 let () =
   test_instruction_fetch_through_sv32 ();
-  Stdio.print_endline "Sv32 instruction fetch, load, and store after mret: good"
+  Stdio.print_endline "Sv32 instruction fetch, load, store, and page fault: good"
 ;;
