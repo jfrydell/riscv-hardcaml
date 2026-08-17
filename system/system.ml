@@ -85,6 +85,8 @@ module Make (Config : Config) = struct
     (** A port to connect devices which receive accesses from the bus. From creation until
         completion, [to_bus] is unassigned wires going into a request-address-based mux,
         and [from_bus] contains any request which hasn't been handled already. *)
+    ; central_bus : 'a Access_emitting_port.t
+    (** The combination of all access emitters, sent to all access handlers. *)
     }
 
   (** Get a new port to emit accesses on, arbiterating with all others. [to_bus] is the
@@ -180,6 +182,7 @@ module Make (Config : Config) = struct
       ; request_interrupt
       ; open_handler = { to_bus = handler_to_emitter; from_bus = emitter_to_handler }
       ; open_emitter = { to_bus = emitter_to_handler; from_bus = handler_to_emitter }
+      ; central_bus = { to_bus = emitter_to_handler; from_bus = handler_to_emitter }
       }
     in
     (* Attach CPU to an emitter port. *)
@@ -231,6 +234,9 @@ module Make (Config : Config) = struct
     in
     port
   ;;
+
+  (** Get the central bus wires, as seen by the CPU and any other emitters. *)
+  let bus { central_bus; _ } = central_bus
 
   (** Complete the system, preventing new emitter/handler connections and closing open
       wires. *)
