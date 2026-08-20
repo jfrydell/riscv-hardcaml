@@ -112,7 +112,7 @@ module Translation = struct
     ; io : 'a (** The address is in the uncachable I/O region. *)
     ; stall : 'a
     (** The last requested translation is in progress, so the values output here are
-        invalid. *)
+        invalid. TODO: always lower valid/fault during stall so we can use individually? *)
     }
   [@@deriving hardcaml]
 end

@@ -178,6 +178,20 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw.Alu.O.Of_signal alu_result =
     Alu.hierarchical ~scope { src1 = src1x; src2 = src2x; optype = decoded.x.optype }
   in
+  let%hw access_unaligned_x =
+    let unaligned_for_size =
+      mux
+        decoded.x.funct3.:[1, 0]
+        [ gnd
+        ; alu_result.result.:(0)
+        ; sel_bottom ~width:2 alu_result.result <>:. 0
+        ; gnd
+        ]
+    in
+    (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load
+     |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store))
+    &&: unaligned_for_size
+  in
   (* Branches *)
   (* We must branch (from execute (TODO: not always)) if a branch condition holds or we are doing a jump. *)
   let branch_cond =
@@ -224,8 +238,14 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw store_data = wire 32 in
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
-    ; load = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load &&: ~:(bubble.m)
-    ; store = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store &&: ~:(bubble.m)
+    ; load =
+        decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load
+        &&: ~:(access_unaligned_x)
+        &&: ~:(bubble.m)
+    ; store =
+        decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store
+        &&: ~:(access_unaligned_x)
+        &&: ~:(bubble.m)
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
     ; store_data
@@ -303,7 +323,8 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
         Pipeline.forward ~pipe_info ~from:F ~to_:M ~default:gnd i.from_l1i.fault
     ; memory_fault = i.from_l1d.fault
     ; branch_unaligned = sel_bottom ~width:2 next_pc.m <>:. 0
-    ; access_unaligned = gnd (* TODO *)
+    ; access_unaligned =
+        Pipeline.forward ~pipe_info ~from:X ~to_:M ~default:gnd access_unaligned_x
     }
   in
   let%hw.Privileged.Trap.O.Of_signal trap =
@@ -317,6 +338,8 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
           { insn = insn.m
           ; decoded = decoded.m
           ; rs1 = rs1val.m
+          ; pc = pc.m
+          ; next_pc = next_pc.m
           ; memory_addr = rdval.m
           ; csrs
           ; triggers = exception_triggers

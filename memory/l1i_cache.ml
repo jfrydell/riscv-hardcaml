@@ -127,11 +127,16 @@ let create
   let%hw tag_match =
     active_pc.valid
     &&: ~:translation_stall
+    &&: translation.result.valid
     &&: read_metadata.valid
     &&: (active_tag ==: read_metadata.tag)
   in
   stall <-- (active_pc.valid &&: ~:(tag_match ||: fault));
-  miss <-- (active_pc.valid &&: ~:translation_stall &&: ~:tag_match);
+  miss
+  <-- (active_pc.valid
+       &&: ~:translation_stall
+       &&: translation.result.valid
+       &&: ~:tag_match);
   let data_mem =
     Ram.create
       ~collision_mode:Write_before_read

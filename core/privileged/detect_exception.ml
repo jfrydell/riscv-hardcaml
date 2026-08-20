@@ -33,6 +33,8 @@ module I = struct
     { insn : 'a [@bits 32]
     ; decoded : 'a Decoded.t
     ; rs1 : 'a [@bits 32] (** Value in rs1 for CSR write. *)
+    ; pc : 'a [@bits 32] (** Address of this instruction. *)
+    ; next_pc : 'a [@bits 32] (** Address selected by this instruction. *)
     ; memory_addr : 'a [@bits 32] (** Effective virtual address for a load or store. *)
     ; csrs : 'a Csrs.t
     ; triggers : 'a Triggers.t
@@ -89,20 +91,23 @@ let detect_illegal_insn scope ~(decoded : _ Decoded.t) ~(csrs : _ Csrs.t) =
   illegal_instruction
 ;;
 
-let create scope ({ insn; decoded; rs1; memory_addr; csrs; triggers } : _ I.t) =
+let create
+  scope
+  ({ insn; decoded; rs1; pc; next_pc; memory_addr; csrs; triggers } : _ I.t)
+  =
   let%hw illegal_instruction =
     detect_illegal_insn (Scope.sub_scope scope "detect_illegal") ~csrs ~decoded
   in
   let%hw.Exception_request.Of_signal exception_request =
     Exception_request.T.Of_signal.priority_select
       [ { valid = triggers.fetch_fault (* TODO: page vs access fault *)
-        ; value = { cause = of_unsigned_int ~width:32 12; value = zero 32 }
+        ; value = { cause = of_unsigned_int ~width:32 12; value = pc }
         }
       ; { valid = illegal_instruction
         ; value = { cause = of_unsigned_int ~width:32 2; value = insn }
         }
       ; { valid = triggers.branch_unaligned
-        ; value = { cause = of_unsigned_int ~width:32 0; value = zero 32 }
+        ; value = { cause = of_unsigned_int ~width:32 0; value = next_pc }
         }
       ; { valid = decoded.is_ecall
         ; value =
@@ -118,7 +123,7 @@ let create scope ({ insn; decoded; rs1; memory_addr; csrs; triggers } : _ I.t) =
                   (decoded.opcode ==: Riscv_isa.Of_signal.Op.load)
                   (of_unsigned_int ~width:32 4)
                   (of_unsigned_int ~width:32 6)
-            ; value = zero 32
+            ; value = memory_addr
             }
         }
       ; { valid = triggers.memory_fault
