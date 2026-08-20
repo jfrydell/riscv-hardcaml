@@ -83,9 +83,10 @@ let update ~(update : _ Update.t) ~(old_values : _ Csrs.t) =
     new_value.:[31, 2] @: legal_mode
   in
   let medeleg_mask =
-    (* Illegal instruction, breakpoint, and U/S environment calls are the
-       implemented synchronous exceptions which can originate below M. *)
-    of_unsigned_int ~width:32 ((1 lsl 2) lor (1 lsl 3) lor (1 lsl 8) lor (1 lsl 9))
+    (* All faults in [Detect_exception] can be delegated. *)
+    [ 12; 2; 0; 8; 9; 3; 4; 6; 13; 15 ]
+    |> List.map ~f:(fun n -> of_unsigned_int ~width:32 (1 lsl n))
+    |> List.reduce_exn ~f:( |: )
   in
   (* TODO: restrict which interrupts can be delegated from M (e.g., MEI shouldn't be able to, I believe) *)
   let update_funs : _ Csrs.t =

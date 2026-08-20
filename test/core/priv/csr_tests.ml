@@ -69,7 +69,7 @@ let expected_regs =
     ; 21, 0x1000
     ; 23, 0x1800
     ; 24, 0x122
-    ; 26, 0x30c
+    ; 26, 0xb35d
     ; 27, 0x800
     ; 28, 0x800
     ; 29, 0x800
@@ -95,4 +95,3 @@ let () =
   then raise_s [%message "CSR emulator result mismatch" (emulator_regs : int32 array)];
   Stdio.print_string "CSR program: all modes good\n"
 ;;
-

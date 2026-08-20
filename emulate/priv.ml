@@ -22,7 +22,7 @@ let legalize_csr_write ~csr value =
   then Int32.(value land (of_int_exn 1 lsl 11))
   else if csr = medeleg
   then (
-    let mask = (1 lsl 2) lor (1 lsl 3) lor (1 lsl 8) lor (1 lsl 9) |> Int32.of_int_exn in
+    let mask = Int32.of_int_exn 0xb35d in
     Int32.(value land mask))
   else if csr = mtvec || csr = stvec
   then (
