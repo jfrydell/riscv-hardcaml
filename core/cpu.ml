@@ -16,12 +16,14 @@ end
 (** Pipeline status for debugging. *)
 module Pipeline_status = struct
   type 'a t =
-    { stall : 'a Pipeline.Pipelined_bit.t
+    { stall_trigger : 'a Pipeline.Pipelined_bit.t
     ; bubble : 'a Pipeline.Pipelined_bit.t
     ; trap_active : 'a
     ; is_insn : 'a Pipeline.Pipelined_bit.t
     ; pc : 'a Pipeline.Pipelined_word.t
     ; last_pc_update : 'a [@bits 32]
+    ; l1i_valid : 'a
+    ; exception_triggers : 'a Privileged.Detect_exception.Triggers.t
     }
   [@@deriving hardcaml]
 end
@@ -43,19 +45,19 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   (* Pipeline stuff *)
   (* Stall signals: stall decode on hazard, fetch when insn not valid, memory
      on a load miss. *)
-  let%hw stall_fetch = wire 1 in
-  let%hw stall_decode = wire 1 in
-  let%hw stall_memory = wire 1 in
+  let%hw.Pipeline.Pipelined_bit.Of_signal stall_trigger =
+    { f = wire 1; d = wire 1; m = wire 1; x = gnd; w = gnd }
+  in
   let%hw.Pipeline.Pipelined_bit.Of_signal stall =
-    { f = stall_fetch |: stall_decode |: stall_memory
-    ; d = stall_decode |: stall_memory
-    ; x = stall_memory
+    { f = stall_trigger.f |: stall_trigger.d |: stall_trigger.m
+    ; d = stall_trigger.d |: stall_trigger.m
+    ; x = stall_trigger.m
     ; m =
-        stall_memory
+        stall_trigger.m
         (* If we stall memory while a WX bypass is happening (e.g., R-type writing to $r1 in W, load miss in M, then R-type reading from $r1 in X), we can have issue where instruction in X is meant to bypass value from W, but while it is stalled (propagated back from M), the instruction in W writes back and the value is unavailable.
 
            TODO: I think best fix is for stalled pipeline latch to take in bypassed value, rather than always holding its current value. Current stall signal uses pipeline latch write-enable, but my understanding is that just muxes in current value when disabled. Muxing in the value from after bypass logic instead shouldn't affect logic depth. *)
-    ; w = stall_memory
+    ; w = stall_trigger.m
     }
   in
   (* Send bubble to M,D,X on trap (detected at end of memory), to D,X on trap or
@@ -114,7 +116,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
     { pc = { value = mux2 stall.f pc_reg pc_to_fetch; valid = vdd } }
   in
-  stall_fetch <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
+  stall_trigger.f <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
   let%hw.Pipeline.Pipelined_word.Of_signal insn =
     Pipeline.Pipelined_word.forward
       ~pipe_info
@@ -229,7 +231,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     ; store_data
     }
   in
-  stall_memory <-- i.from_l1d.stall;
+  stall_trigger.m <-- i.from_l1d.stall;
   let%hw.Privileged.Csrs.Of_signal csrs = Privileged.Csrs.Of_signal.wires () in
   let csr_read_cases =
     Privileged.Csrs.map2 Privileged.Csrs.addresses csrs ~f:(fun address value ->
@@ -283,7 +285,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let reg_is_load_dest rs =
     decoded.x.result_in_m &: (rs ==: decoded.x.rd) &: (rs <>: zero 5)
   in
-  stall_decode
+  stall_trigger.d
   <-- (reg_is_load_dest decoded.d.rs1
        |: (reg_is_load_dest decoded.d.rs2 &: ~:(decoded.d.rs2_not_used_until_m)));
   (* Trap / CSR write handling.
@@ -334,13 +336,15 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     ; csrs
     ; commit_pc = { value = pc.w; valid = commit_valid }
     ; pipeline_status =
-        { stall
+        { stall_trigger
         ; bubble
         ; pc
         ; trap_active
         ; is_insn = Pipeline.Pipelined_word.to_untyped is_insn
         ; last_pc_update =
             Types.Clocking.reg i.clocking ~enable:pc_update.valid pc_update.value
+        ; l1i_valid = i.from_l1i.valid
+        ; exception_triggers
         }
     }
 ;;
