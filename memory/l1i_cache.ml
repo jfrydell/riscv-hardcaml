@@ -95,9 +95,9 @@ let create
       ; walker_from_mem
       }
   in
-  let%hw fault = translation.result.fault in
   let%hw active_pa = translation.result.pa in
   let%hw translation_stall = translation.result.stall in
+  let%hw fault = translation.result.fault &&: ~:translation_stall in
   With_valid.iter2 ~f:(fun a n -> a <-- Types.Clocking.reg clocking n) active_pc next_pc;
   let%hw active_tag = extract_tag active_pa in
   let%hw update_tag = wire 1 in

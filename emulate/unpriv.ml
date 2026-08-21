@@ -20,8 +20,8 @@ let mem_size = function
 ;;
 
 (* Instruction at the current PC. *)
-let current_pc_insn { pc; memory; _ } =
-  let insn = load ~memory ~addr:!pc ~size:4 ~extend:Insn.Unsigned in
+let current_pc_insn { pc; memory; address_translation; _ } =
+  let insn = load ~memory ~addr:(address_translation !pc) ~size:4 ~extend:Insn.Unsigned in
   match Insn.of_int32 insn with
   | Ok insn -> insn
   | Error error ->
@@ -74,7 +74,7 @@ let is_unaligned_access ~regs ~insn =
 ;;
 
 (* Execute one instruction on the emulator, updating its state. *)
-let step ({ regs; pc; memory; _ } as state) =
+let step ({ regs; pc; memory; address_translation; _ } as state) =
   let open Insn in
   let insn = current_pc_insn state in
   let alu rd rs1 src2 op =
@@ -97,11 +97,15 @@ let step ({ regs; pc; memory; _ } as state) =
    | IntReg (op, { rd; rs1; rs2 }) -> alu rd rs1 regs.(rs2) op
    | IntImm (op, { rd; rs1; imm }) -> alu rd rs1 imm op
    | Load (size, sign, { rd; rs1; imm }) ->
-     touch ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size);
-     regs.(rd)
-     <- load ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~extend:sign
+     let addr = address_translation Int32.(regs.(rs1) + imm) in
+     touch ~memory ~addr ~size:(mem_size size);
+     regs.(rd) <- load ~memory ~addr ~size:(mem_size size) ~extend:sign
    | Store (size, { rs1; rs2; imm }) ->
-     store ~memory ~addr:Int32.(regs.(rs1) + imm) ~size:(mem_size size) ~value:regs.(rs2)
+     store
+       ~memory
+       ~addr:(address_translation Int32.(regs.(rs1) + imm))
+       ~size:(mem_size size)
+       ~value:regs.(rs2)
    | Branch _ -> ()
    | Jal { rd; _ } -> Int32.(regs.(rd) <- !pc + of_int_exn 4)
    | Jalr { rd; _ } -> Int32.(regs.(rd) <- !pc + of_int_exn 4)

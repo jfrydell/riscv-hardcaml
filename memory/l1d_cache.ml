@@ -88,6 +88,7 @@ module To_pipe = struct
     (** The memory stage is stalled. Output data is invalid, and any access from the
         pipeline is ignored. *)
     ; fault : 'a (** (If [stall] is low) the given access caused an access fault. *)
+    ; unaligned : 'a (** The requested load or store is unaligned for its size. *)
     }
   [@@deriving hardcaml]
 end
@@ -121,6 +122,13 @@ module Metadata = struct
   [@@deriving hardcaml]
 end
 
+let access_unaligned ({ addr; load; store; size; _ } : _ From_pipe.t) =
+  let unaligned_for_size =
+    mux size [ gnd; addr.:(0); sel_bottom ~width:2 addr <>:. 0; gnd ]
+  in
+  load ||: store &&: unaligned_for_size
+;;
+
 let create
   scope
   ({ clocking; mmu_state; from_pipeline; cache_from_mem; walker_from_mem } : _ I.t)
@@ -136,13 +144,18 @@ let create
   (* Note: each of these depends on getting a valid translation, so page faults
      complete as soon as [stall_translate] lowers. *)
   let%hw stall = load_fill ||: io_load_stall ||: store_stall ||: stall_translate in
+  let%hw incoming_unaligned = access_unaligned from_pipeline in
   let%hw.Mmu.Translate.O.Of_signal translation =
     Mmu.Translate.hierarchical
       ~scope
       { clocking
       ; state = mmu_state
       ; va =
-          { valid = from_pipeline.load ||: from_pipeline.store &&: ~:stall
+          { valid =
+              from_pipeline.load
+              ||: from_pipeline.store
+              &&: ~:incoming_unaligned
+              &&: ~:stall
           ; value = from_pipeline.addr
           }
       ; access_type =
@@ -167,11 +180,20 @@ let create
   in
   From_pipe.(
     Of_signal.assign registered_access (map next_access ~f:(Types.Clocking.reg clocking)));
+  let%hw unaligned = access_unaligned registered_access in
   let%hw.From_pipe.Of_signal active_access =
     { registered_access with
       addr = translation.result.pa
-    ; load = registered_access.load &&: translation.result.valid &&: ~:stall_translate
-    ; store = registered_access.store &&: translation.result.valid &&: ~:stall_translate
+    ; load =
+        registered_access.load
+        &&: ~:unaligned
+        &&: translation.result.valid
+        &&: ~:stall_translate
+    ; store =
+        registered_access.store
+        &&: ~:unaligned
+        &&: translation.result.valid
+        &&: ~:stall_translate
     }
   in
   (* Extract all cache addresses from the translated physical address. *)
@@ -304,11 +326,13 @@ let create
   in
   (* Only give fault for one cycle, stopping once we've received a new [registered_access] from the pipeline. *)
   let%hw fault =
-    translation.result.fault &&: (registered_access.load ||: registered_access.store)
+    translation.result.fault
+    &&: ~:unaligned
+    &&: (registered_access.load ||: registered_access.store)
   in
   ({ cache_to_mem
    ; walker_to_mem = translation.walker_to_mem
-   ; to_pipeline = { load_data; stall; fault }
+   ; to_pipeline = { load_data; stall; fault; unaligned }
    }
    : _ O.t)
 ;;

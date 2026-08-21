@@ -9,7 +9,9 @@ type state =
   ; privilege : int ref
   ; pc : int32 ref
   ; memory : (int32, int) Hashtbl.t
-  (* Byte-addressed memory (range 0-255), defaulting to zero *)
+  (** Byte-addressed physical memory (range 0-255), defaulting to zero. *)
+  ; address_translation : int32 -> int32 [@sexp.opaque]
+  (** Translation applied to instruction and data addresses before accessing [memory]. *)
   }
 [@@deriving sexp_of]
 
@@ -54,17 +56,20 @@ let store ~memory ~addr ~value ~size =
   done
 ;;
 
-let create ~memory =
+let create ?(address_translation = Fn.id) memory =
   { regs = Array.create ~len:32 Int32.zero
   ; csrs = Array.create ~len:4096 Int32.zero
   ; privilege = ref 3
   ; pc = ref Int32.zero
   ; memory
+  ; address_translation
   }
 ;;
 
 (* Create a processor state with the given initial memory contents (copied). *)
-let with_mem memory = create ~memory:(Hashtbl.copy memory)
+let with_mem ?address_translation memory =
+  create ?address_translation (Hashtbl.copy memory)
+;;
 
 (* Create an empty processor state, with memory, PC, and registers initialized to 0. *)
 let blank () = with_mem (Hashtbl.create (module Int32))
@@ -81,5 +86,5 @@ let init ~insns ~addr =
         ~size:4
         ~value:(Insn.to_int32 insn))
     insns;
-  create ~memory
+  create memory
 ;;
