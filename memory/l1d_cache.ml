@@ -184,16 +184,8 @@ let create
   let%hw.From_pipe.Of_signal active_access =
     { registered_access with
       addr = translation.result.pa
-    ; load =
-        registered_access.load
-        &&: ~:unaligned
-        &&: translation.result.valid
-        &&: ~:stall_translate
-    ; store =
-        registered_access.store
-        &&: ~:unaligned
-        &&: translation.result.valid
-        &&: ~:stall_translate
+    ; load = registered_access.load &&: ~:unaligned &&: translation.result.valid
+    ; store = registered_access.store &&: ~:unaligned &&: translation.result.valid
     }
   in
   (* Extract all cache addresses from the translated physical address. *)

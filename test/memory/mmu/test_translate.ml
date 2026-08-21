@@ -99,13 +99,27 @@ let check_result ~state ~access_type ~mode ~va (output : Step.O_data.t) =
     | Sv32 -> Sample_page_table.check_translation ~va ~actual_pa:actual)
 ;;
 
+let check_stalling_result (output : Step.O_data.t) =
+  let result = (Step.O_data.before_edge output).result in
+  if Bits.to_bool result.valid || Bits.to_bool result.fault
+  then
+    raise_s
+      [%message
+        "translation status was not mutually exclusive"
+          (result.valid : Bits.t)
+          (result.fault : Bits.t)
+          (result.stall : Bits.t)]
+;;
+
 let issue_translation ~state ~access_type ~mode ~va ~delay_cycles =
   let%bind.Step _ = Step.cycle (input ~state ~access_type ~va ~valid:true) in
   let rec wait_for_result () =
     (* TODO: fails to test back-to-back requests. *)
     let%bind.Step output = Step.cycle (input ~state ~access_type ~va ~valid:false) in
     if Bits.to_bool (Step.O_data.before_edge output).result.stall
-    then wait_for_result ()
+    then (
+      check_stalling_result output;
+      wait_for_result ())
     else (
       check_result ~state ~access_type ~mode ~va output;
       wait_for_held_result delay_cycles)

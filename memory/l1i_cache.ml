@@ -96,8 +96,7 @@ let create
       }
   in
   let%hw active_pa = translation.result.pa in
-  let%hw translation_stall = translation.result.stall in
-  let%hw fault = translation.result.fault &&: ~:translation_stall in
+  let%hw fault = translation.result.fault in
   With_valid.iter2 ~f:(fun a n -> a <-- Types.Clocking.reg clocking n) active_pc next_pc;
   let%hw active_tag = extract_tag active_pa in
   let%hw update_tag = wire 1 in
@@ -126,17 +125,12 @@ let create
   in
   let%hw tag_match =
     active_pc.valid
-    &&: ~:translation_stall
     &&: translation.result.valid
     &&: read_metadata.valid
     &&: (active_tag ==: read_metadata.tag)
   in
   stall <-- (active_pc.valid &&: ~:(tag_match ||: fault));
-  miss
-  <-- (active_pc.valid
-       &&: ~:translation_stall
-       &&: translation.result.valid
-       &&: ~:tag_match);
+  miss <-- (active_pc.valid &&: translation.result.valid &&: ~:tag_match);
   let data_mem =
     Ram.create
       ~collision_mode:Write_before_read

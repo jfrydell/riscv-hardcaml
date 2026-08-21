@@ -149,7 +149,12 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
     let%hw.Iface.Translation.Of_signal selected_result =
       Iface.Translation.Of_signal.mux2 translating_output tlb_out.result bare_translation
     in
-    { selected_result with io = selected_result.pa.:(addr_width - 1); stall }
+    { selected_result with
+      valid = selected_result.valid &&: ~:stall
+    ; fault = selected_result.fault &&: ~:stall
+    ; io = selected_result.pa.:(addr_width - 1)
+    ; stall
+    }
   in
   ({ result; walker_to_mem = walker_out.read_to_mem } : _ O.t)
 ;;

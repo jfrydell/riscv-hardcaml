@@ -32,6 +32,8 @@ end
 module O = struct
   type 'a t =
     { result : 'a Iface.Translation.t
+    (** Result to send to CPU. Doesn't maintain mutual exclusivity of [valid]/[fault] and
+        [stall] (the latter takes priority). *)
     ; to_walker : 'a Iface.Tlb_request.t
     }
   [@@deriving hardcaml]
@@ -100,9 +102,9 @@ let create scope (i : _ I.t) =
   let hold_after_hit = Types.Clocking.cut_through_reg i.clocking ~enable:hit in
   ({ result =
        { pa = hold_after_hit result_pa
+       ; io = result_pa.:(Iface.addr_width - 1)
        ; valid = hold_after_hit ~:result_fault
        ; fault = hold_after_hit result_fault
-       ; io = result_pa.:(Iface.addr_width - 1)
        ; stall = busy
        }
    ; to_walker = { vpn = active_vpn; valid = busy }

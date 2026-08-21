@@ -100,8 +100,9 @@ module Tlb_response = struct
   [@@deriving hardcaml]
 end
 
-(** The result of address translation, sent to the CPU. Unless noted otherwise, guaranteed
-    to be held stable until the next translation request arrives or memory state changes. *)
+(** The result of address translation, sent to the CPU. [valid], [fault], and [stall] are
+    mutually exclusive. A completed result is held until the next translation request so
+    its address and status can be consumed over multiple cycles. *)
 module Translation = struct
   type 'a t =
     { pa : 'a [@bits addr_width] (** The translated address. *)
@@ -110,9 +111,7 @@ module Translation = struct
     ; fault : 'a
     (** There was an error in the access translation, so a page fault should be raised. *)
     ; io : 'a (** The address is in the uncachable I/O region. *)
-    ; stall : 'a
-    (** The last requested translation is in progress, so the values output here are
-        invalid. TODO: always lower valid/fault during stall so we can use individually? *)
+    ; stall : 'a (** The last requested translation is in progress. *)
     }
   [@@deriving hardcaml]
 end
