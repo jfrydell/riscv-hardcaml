@@ -57,8 +57,10 @@ let store ~memory ~addr ~value ~size =
 ;;
 
 let create ?(address_translation = Fn.id) memory =
+  let csrs = Array.create ~len:4096 Int32.zero in
+  csrs.(Insn.Csr_address.misa) <- Int32.of_string "0x40140100";
   { regs = Array.create ~len:32 Int32.zero
-  ; csrs = Array.create ~len:4096 Int32.zero
+  ; csrs
   ; privilege = ref 3
   ; pc = ref Int32.zero
   ; memory

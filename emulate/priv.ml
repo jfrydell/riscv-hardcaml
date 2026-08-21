@@ -16,6 +16,8 @@ let legalize_csr_write ~csr value =
     if mpp = 2 then Int32.(value lor (of_int_exn 3 lsl 11)) else value)
   else if csr = mstatush
   then Int32.zero
+  else if csr = misa
+  then Int32.of_string "0x40140100"
   else if csr = mie
   then Int32.(value land (of_int_exn 1 lsl 11))
   else if csr = mideleg
@@ -178,6 +180,7 @@ let implemented_csr csr =
     ; sip
     ; mstatus
     ; mstatush
+    ; misa
     ; medeleg
     ; mideleg
     ; mie
@@ -187,6 +190,10 @@ let implemented_csr csr =
     ; mcause
     ; mtval
     ; mip
+    ; mvendorid
+    ; marchid
+    ; mimpid
+    ; mhartid
     ; 0x7c0
     ; 0x7c1
     ; 0x7c2

@@ -83,7 +83,14 @@ let instruction
                Int32.(imm 4 0 land of_int_exn 31) (* Don't sign-extend shift amount *)
              | _ -> imm 11 0)
         } )
-  | 2 -> Insn.Load (memsize (), sign (), { rd = reg (); rs1 = reg (); imm = addr () })
+  | 2 ->
+    let size = memsize () in
+    let signedness =
+      match size with
+      | Word -> Insn.Signed
+      | _ -> sign ()
+    in
+    Insn.Load (size, signedness, { rd = reg (); rs1 = reg (); imm = addr () })
   | 3 -> Insn.Store (memsize (), { rs1 = reg (); rs2 = reg (); imm = addr () })
   | 4 -> Insn.Branch (branchop (), { rs1 = reg (); rs2 = reg (); imm = branch_imm 12 1 })
   | 5 -> Insn.Jal { rd = reg (); imm = branch_imm 20 2 }

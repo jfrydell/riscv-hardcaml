@@ -98,18 +98,18 @@ let system_interrupt_program =
         ; Lui { rd = 14; imm = Int32.of_string "0x80000000" }
         ; Lui { rd = 15; imm = Int32.of_string "0x80000000" }
         ; addi ~rd:14 ~rs1:14 11
-        ; Load (Word, Unsigned, { rd = 12; rs1 = 15; imm = int 4 })
+        ; Load (Word, Signed, { rd = 12; rs1 = 15; imm = int 4 })
         ; addi ~rd:24 ~rs1:24 1
         ; Branch (Eq, { rs1 = 12; rs2 = 0; imm = int 20 })
-        ; Load (Word, Unsigned, { rd = 13; rs1 = 3; imm = int 0x200 })
+        ; Load (Word, Signed, { rd = 13; rs1 = 3; imm = int 0x200 })
         ; addi ~rd:13 ~rs1:13 1
         ; Store (Word, { rs1 = 3; rs2 = 13; imm = int 0x200 })
         ; Store (Word, { rs1 = 15; rs2 = 13; imm = Int32.zero })
         ; Store (Word, { rs1 = 15; rs2 = 12; imm = int 4 })
-        ; Load (Word, Unsigned, { rd = 12; rs1 = 2; imm = int 12 })
-        ; Load (Word, Unsigned, { rd = 13; rs1 = 2; imm = int 8 })
-        ; Load (Word, Unsigned, { rd = 14; rs1 = 2; imm = int 4 })
-        ; Load (Word, Unsigned, { rd = 15; rs1 = 2; imm = Int32.zero })
+        ; Load (Word, Signed, { rd = 12; rs1 = 2; imm = int 12 })
+        ; Load (Word, Signed, { rd = 13; rs1 = 2; imm = int 8 })
+        ; Load (Word, Signed, { rd = 14; rs1 = 2; imm = int 4 })
+        ; Load (Word, Signed, { rd = 15; rs1 = 2; imm = Int32.zero })
         ; addi ~rd:2 ~rs1:2 16
         ; Mret
         ] )
@@ -126,7 +126,7 @@ let system_interrupt_program =
         ; csrs mie 14
         ; addi ~rd:14 ~rs1:0 8
         ; csrs mstatus 14
-        ; Load (Word, Unsigned, { rd = 14; rs1 = 3; imm = int 0x200 })
+        ; Load (Word, Signed, { rd = 14; rs1 = 3; imm = int 0x200 })
         ; Store (Word, { rs1 = 15; rs2 = 14; imm = Int32.zero })
         ; Jalr { rd = 0; rs1 = 1; imm = Int32.zero }
         ] )

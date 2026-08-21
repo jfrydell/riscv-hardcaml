@@ -43,6 +43,17 @@ end
 
 type 'a t =
   { opcode : 'a Riscv_isa.Of_signal.Op.t
+  ; is_int_r : 'a
+  ; is_int_i : 'a
+  ; is_load : 'a
+  ; is_store : 'a
+  ; is_branch : 'a
+  ; is_jalr : 'a
+  ; is_jal : 'a
+  ; is_lui : 'a
+  ; is_auipc : 'a
+  ; is_env : 'a
+  ; is_system : 'a
   ; rs1 : 'a Regid.t
   ; rs2 : 'a Regid.t
   ; rd : 'a Regid.t
@@ -57,6 +68,7 @@ type 'a t =
   ; is_ebreak : 'a
   ; is_mret : 'a
   ; is_sret : 'a
+  ; is_illegal : 'a (** The instruction is illegal (for the current privilege level). *)
   ; result_in_m : 'a (** An instruction that produces its result in M instead of X. *)
   ; rs2_not_used_until_m : 'a
   (** The value in rs2 is not used until M (it is the data for a store). *)

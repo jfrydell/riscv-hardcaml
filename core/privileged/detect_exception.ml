@@ -52,52 +52,25 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* TODO: move to general Decoded.is_illegal *)
-let detect_illegal_insn scope ~(decoded : _ Decoded.t) ~(csrs : _ Csrs.t) =
-  let%hw is_non_csr_system =
-    decoded.opcode ==: Riscv_isa.Of_signal.Op.env &&: (decoded.funct3 ==:. 0)
-  in
-  let%hw is_illegal_system =
-    is_non_csr_system
-    &&: ~:(decoded.is_ecall ||: decoded.is_ebreak ||: decoded.is_mret ||: decoded.is_sret)
-    ||: (decoded.opcode ==: Riscv_isa.Of_signal.Op.env &&: (decoded.funct3 ==:. 4))
-  in
-  let%hw illegal_mret = decoded.is_mret &&: (csrs.privilege <>:. 3) in
-  let%hw.Csrs.Mstatus.Fields.Of_signal mstatus =
-    Csrs.Mstatus.Fields.of_register csrs.mstatus
-  in
-  let%hw illegal_sret =
-    decoded.is_sret
-    &&: (csrs.privilege.:[1, 0] <:. 1 ||: (csrs.privilege ==:. 1 &&: mstatus.tsr))
-  in
-  (* TODO: move to CSR execution, where other address matching happens *)
+(* TODO: move CSR implementation checking to CSR execution.  Decode checks the
+   privilege encoded by the CSR address, but an otherwise well-formed access to
+   an unimplemented CSR is detected here until CSR execution has its own
+   legality result. *)
+let detect_illegal_csr scope ~(decoded : _ Decoded.t) =
   let%hw csr_is_implemented =
     Csrs.to_list Csrs.addresses
     |> List.filter ~f:(fun address -> address <> Csrs.addresses.privilege)
     |> List.map ~f:(fun address -> decoded.csr_addr ==:. address)
     |> reduce ~f:( |: )
   in
-  let%hw csr_privilege_allowed = csrs.privilege.:[1, 0] >=: decoded.csr_addr.:[9, 8] in
-  let%hw csr_is_read_only = decoded.csr_addr.:[11, 10] ==:. 3 in
-  let%hw illegal_csr =
-    decoded.is_csr
-    &&: (~:csr_is_implemented
-         ||: ~:csr_privilege_allowed
-         ||: (decoded.csr_writes &&: csr_is_read_only))
-  in
-  let%hw illegal_instruction =
-    is_illegal_system ||: illegal_mret ||: illegal_sret ||: illegal_csr
-  in
-  illegal_instruction
+  decoded.is_csr &&: ~:csr_is_implemented
 ;;
 
 let create
   scope
   ({ insn; decoded; rs1; pc; next_pc; memory_addr; csrs; triggers } : _ I.t)
   =
-  let%hw illegal_instruction =
-    detect_illegal_insn (Scope.sub_scope scope "detect_illegal") ~csrs ~decoded
-  in
+  let%hw illegal_instruction = decoded.is_illegal ||: detect_illegal_csr scope ~decoded in
   let%hw.Exception_request.Of_signal exception_request =
     Exception_request.T.Of_signal.priority_select
       [ { valid = triggers.fetch_fault (* TODO: page vs access fault *)
@@ -120,7 +93,7 @@ let create
         ; value =
             { cause =
                 mux2
-                  (decoded.opcode ==: Riscv_isa.Of_signal.Op.load)
+                  decoded.is_load
                   (of_unsigned_int ~width:32 4)
                   (of_unsigned_int ~width:32 6)
             ; value = memory_addr
@@ -130,7 +103,7 @@ let create
         ; value =
             { cause =
                 mux2
-                  (decoded.opcode ==: Riscv_isa.Of_signal.Op.load)
+                  decoded.is_load
                   (of_unsigned_int ~width:32 13)
                   (of_unsigned_int ~width:32 15)
             ; value = memory_addr

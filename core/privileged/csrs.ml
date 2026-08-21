@@ -11,6 +11,11 @@ type 'a t =
   ; stval : 'a [@bits 32]
   ; sip : 'a [@bits 32] (** Restricted view of [mip]. *)
   ; satp : 'a [@bits 32]
+  ; misa : 'a [@bits 32]
+  ; mvendorid : 'a [@bits 32]
+  ; marchid : 'a [@bits 32]
+  ; mimpid : 'a [@bits 32]
+  ; mhartid : 'a [@bits 32]
   ; mstatus : 'a [@bits 32]
   ; mstatush : 'a [@bits 32] (** Read-only zero on this implementation. *)
   ; medeleg : 'a [@bits 32]
@@ -41,6 +46,7 @@ let addresses =
   ; stval = 0x143
   ; sip = 0x144
   ; satp = 0x180
+  ; misa = 0x301
   ; mstatus = 0x300
   ; mstatush = 0x310
   ; medeleg = 0x302
@@ -52,6 +58,10 @@ let addresses =
   ; mcause = 0x342
   ; mtval = 0x343
   ; mip = 0x344
+  ; mvendorid = 0xf11
+  ; marchid = 0xf12
+  ; mimpid = 0xf13
+  ; mhartid = 0xf14
   ; custom0 = 0x7c0
   ; custom1 = 0x7c1
   ; custom2 = 0x7c2
@@ -83,6 +93,10 @@ module Wrap (Data : Interface.S) = struct
   include T
   include Interface.Make (T)
 end
+
+(* This core currently implements RV32I with S and U privilege modes.  MISA is
+   hardwired until extension enable/disable semantics are implemented. *)
+let initial_misa = Signal.of_unsigned_int ~width:32 0x40140100
 
 (** One bit per CSR. *)
 module Mask = Wrap (Types.Value (struct

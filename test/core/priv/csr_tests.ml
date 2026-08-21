@@ -7,6 +7,7 @@ module Csr_bank_sim =
 
 let csr_address = Privileged.Csrs.addresses.custom0
 let addresses = Privileged.Csrs.addresses
+let halt = Insn.Branch (Insn.Eq, { rs1 = 0; rs2 = 0; imm = Int32.zero })
 
 let program =
   let open Insn in
@@ -45,6 +46,7 @@ let program =
   ; Csr { op = Csrrw; rd = 25; src = Reg 24; csr = addresses.sstatus }
   ; Csr { op = Csrrs; rd = 30; src = Reg 0; csr = addresses.mstatus }
   ; Csr { op = Csrrs; rd = 31; src = Reg 0; csr = addresses.sstatus }
+  ; halt
   ]
 ;;
 
@@ -80,7 +82,38 @@ let expected_regs =
   regs
 ;;
 
+let test_machine_identity_csrs () =
+  let open Insn in
+  let addresses = Privileged.Csrs.addresses in
+  let program =
+    [ Csr { op = Csrrs; rd = 1; src = Reg 0; csr = addresses.misa }
+    ; Csr { op = Csrrs; rd = 2; src = Reg 0; csr = addresses.mvendorid }
+    ; Csr { op = Csrrs; rd = 3; src = Reg 0; csr = addresses.marchid }
+    ; Csr { op = Csrrs; rd = 4; src = Reg 0; csr = addresses.mimpid }
+    ; Csr { op = Csrrs; rd = 5; src = Reg 0; csr = addresses.mhartid }
+    ; halt
+    ]
+  in
+  let emulator = Riscvemulate.State.init ~insns:program ~addr:Int32.zero in
+  let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves in
+  List.iter program ~f:(fun _ ->
+    Sim.Cpu.cycle_insn sim;
+    Riscvemulate.Unpriv.step emulator);
+  Sim.Cpu.flush sim;
+  let expected = Array.create ~len:32 Int32.zero in
+  expected.(1) <- Int32.of_string "0x40140100";
+  if not (Array.equal Int32.equal (Sim.Cpu.regs sim) expected)
+  then raise_s [%message "Machine identity CSR result mismatch" (Sim.Cpu.regs sim : int32 array)];
+  if not (Array.equal Int32.equal (Riscvemulate.State.regs emulator) expected)
+  then
+    raise_s
+      [%message
+        "Machine identity CSR emulator result mismatch"
+          (Riscvemulate.State.regs emulator : int32 array)]
+;;
+
 let () =
+  test_machine_identity_csrs ();
   let emulator = Riscvemulate.State.init ~insns:program ~addr:Int32.zero in
   let sim = Sim.Cpu.create ~memory:(Hashtbl.copy emulator.memory) No_waves in
   List.iter program ~f:(fun _ ->

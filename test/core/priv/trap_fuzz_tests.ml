@@ -169,7 +169,7 @@ let run_interrupt_scenario { vectored; delays } =
       ; ( 0x40
         , [ addi ~rd:10 ~rs1:10 1
           ; Store (Word, { rs1 = 3; rs2 = 10; imm = Int32.zero })
-          ; Load (Word, Unsigned, { rd = 11; rs1 = 3; imm = Int32.zero })
+          ; Load (Word, Signed, { rd = 11; rs1 = 3; imm = Int32.zero })
           ; Branch (Eq, { rs1 = 0; rs2 = 0; imm = int (-12) })
           ] )
       ; handler_pc, interrupt_handler

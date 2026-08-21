@@ -105,9 +105,9 @@ let test_load_page_fault () =
         ; Load (Word, Signed, { rd = 4; rs1 = 3; imm = Int32.zero })
         ; Lui { rd = 5; imm = int store_virtual_address }
         ; Store (Word, { rs1 = 5; rs2 = 4; imm = Int32.zero })
-        ; Load (Word, Unsigned, { rd = 6; rs1 = 5; imm = Int32.zero })
+        ; Load (Word, Signed, { rd = 6; rs1 = 5; imm = Int32.zero })
         ; Lui { rd = 7; imm = int invalid_virtual_address }
-        ; Load (Word, Unsigned, { rd = 8; rs1 = 7; imm = Int32.zero })
+        ; Load (Word, Signed, { rd = 8; rs1 = 7; imm = Int32.zero })
         ]
       ~mcause:13
       ~mepc:faulting_pc
@@ -143,12 +143,7 @@ let test_instruction_page_fault () =
   let faulting_pc = load_virtual_address in
   run_fault_test
     ~user_program:
-      [ Branch
-          ( Eq
-          , { rs1 = 0
-            ; rs2 = 0
-            ; imm = int (faulting_pc - code_virtual_address)
-            } )
+      [ Branch (Eq, { rs1 = 0; rs2 = 0; imm = int (faulting_pc - code_virtual_address) })
       ]
     ~mcause:12
     ~mepc:faulting_pc
@@ -162,7 +157,7 @@ let test_unaligned_load () =
   run_fault_test
     ~user_program:
       [ Lui { rd = 7; imm = int load_virtual_address }
-      ; Load (Word, Unsigned, { rd = 8; rs1 = 7; imm = int 2 })
+      ; Load (Word, Signed, { rd = 8; rs1 = 7; imm = int 2 })
       ]
     ~mcause:4
     ~mepc:faulting_pc

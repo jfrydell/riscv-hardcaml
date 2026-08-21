@@ -106,6 +106,7 @@ module Csr_address = struct
   let scause = 0x142
   let stval = 0x143
   let sip = 0x144
+  let misa = 0x301
   let mstatus = 0x300
   let mstatush = 0x310
   let medeleg = 0x302
@@ -117,6 +118,10 @@ module Csr_address = struct
   let mcause = 0x342
   let mtval = 0x343
   let mip = 0x344
+  let mvendorid = 0xf11
+  let marchid = 0xf12
+  let mimpid = 0xf13
+  let mhartid = 0xf14
 end
 
 type insn =
@@ -385,7 +390,9 @@ let to_int32 =
   | IntReg (op, r) -> Int32.( + ) Int32.(regsr r + aluop op) Binary.Op.intR
   | IntImm (op, r) -> Int32.( + ) Int32.(regsi r + aluop op) Binary.Op.intI
   | Load (size, sgn, r) ->
-    Int32.( + ) Int32.(regsi r + mem_size size + mem_sign sgn) Binary.Op.load
+    (match size, sgn with
+     | Word, Unsigned -> failwith "load-word-unsigned is not an instruction (use signed)"
+     | _ -> Int32.( + ) Int32.(regsi r + mem_size size + mem_sign sgn) Binary.Op.load)
   | Store (size, r) -> Int32.( + ) Int32.(regss r + mem_size size) Binary.Op.store
   | Branch (op, r) -> Int32.( + ) Int32.(regsb r + brop op) Binary.Op.branch
   | Jal r -> Int32.( + ) (regsj r) Binary.Op.jal

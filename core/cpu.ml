@@ -139,10 +139,14 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw.Pipeline.Pipelined_word.Of_signal is_insn =
     Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:F ~default:gnd vdd
   in
+  let%hw.Privileged.Csrs.Of_signal csrs = Privileged.Csrs.Of_signal.wires () in
   (* Decode *)
   let module Pipelined_decoded = Pipeline.Pipelined (Decoded) in
   let%hw.Pipelined_decoded.Of_signal decoded =
-    Pipelined_decoded.forward ~pipe_info ~from_stage:D (Decode.hierarchical ~scope insn.d)
+    Pipelined_decoded.forward
+      ~pipe_info
+      ~from_stage:D
+      (Decode.hierarchical ~scope { insn = insn.d; privilege = csrs.privilege; mstatus = csrs.mstatus })
   in
   (* Register file *)
   let%hw reg_write = wire 32 in
@@ -164,16 +168,13 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let%hw src1x =
     mux2
-      (decoded.x.opcode
-       ==: Riscv_isa.Of_signal.Op.branch
-       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jal)
-       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.auiPc))
+      (decoded.x.is_branch |: decoded.x.is_jal |: decoded.x.is_auipc)
       pc.x
       rs1val.x
   in
   (* Second is rs2 for R-type, imm otherwise (including branch, where rs2 is used for comparison while ALU calculates PC) *)
   let%hw src2x =
-    mux2 (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.intR) rs2val.x decoded.x.imm
+    mux2 decoded.x.is_int_r rs2val.x decoded.x.imm
   in
   (* ALU *)
   let%hw.Alu.O.Of_signal alu_result =
@@ -203,9 +204,9 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   branch_execute
   <-- reduce
         ~f:( |: )
-        [ decoded.x.opcode ==: Riscv_isa.Of_signal.Op.branch &: branch_cond
-        ; decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jal
-        ; decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jalr
+        [ decoded.x.is_branch &: branch_cond
+        ; decoded.x.is_jal
+        ; decoded.x.is_jalr
         ];
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
@@ -215,9 +216,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   in
   let%hw execute_result =
     mux2
-      (decoded.x.opcode
-       ==: Riscv_isa.Of_signal.Op.jal
-       |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.jalr))
+      (decoded.x.is_jal |: decoded.x.is_jalr)
       (pc.x +: of_string "32'd4")
       alu_result.result
   in
@@ -225,15 +224,14 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw store_data = wire 32 in
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
-    ; load = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load &&: ~:(bubble.m)
-    ; store = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store &&: ~:(bubble.m)
+    ; load = decoded.x.is_load &&: ~:(bubble.m)
+    ; store = decoded.x.is_store &&: ~:(bubble.m)
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
     ; store_data
     }
   in
   stall_trigger.m <-- i.from_l1d.stall;
-  let%hw.Privileged.Csrs.Of_signal csrs = Privileged.Csrs.Of_signal.wires () in
   let csr_read_cases =
     Privileged.Csrs.map2 Privileged.Csrs.addresses csrs ~f:(fun address value ->
       of_unsigned_int ~width:12 address, value)

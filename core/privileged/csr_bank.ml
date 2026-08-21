@@ -48,7 +48,8 @@ let create scope ({ clocking; mip; explicit_write; trap_write } : _ I.t) =
   in
   let clear_values =
     { (Csrs.map Csrs.addresses ~f:(fun _ -> Signal.zero 32)) with
-      privilege = Signal.of_unsigned_int ~width:32 3
+      misa = Csrs.initial_misa
+    ; privilege = Signal.of_unsigned_int ~width:32 3
     }
   in
   Csrs.Of_signal.assign
