@@ -24,6 +24,7 @@ module Pipeline_status = struct
     ; last_pc_update : 'a [@bits 32]
     ; l1i_valid : 'a
     ; exception_triggers : 'a Privileged.Detect_exception.Triggers.t
+    ; pc_to_fetch : 'a [@bits 32]
     }
   [@@deriving hardcaml]
 end
@@ -182,14 +183,11 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     let unaligned_for_size =
       mux
         decoded.x.funct3.:[1, 0]
-        [ gnd
-        ; alu_result.result.:(0)
-        ; sel_bottom ~width:2 alu_result.result <>:. 0
-        ; gnd
-        ]
+        [ gnd; alu_result.result.:(0); sel_bottom ~width:2 alu_result.result <>:. 0; gnd ]
     in
-    (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load
-     |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store))
+    decoded.x.opcode
+    ==: Riscv_isa.Of_signal.Op.load
+    |: (decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store)
     &&: unaligned_for_size
   in
   (* Branches *)
@@ -238,14 +236,8 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw store_data = wire 32 in
   let%hw.Memory.L1d_cache.From_pipe.Of_signal to_l1d =
     { addr = alu_result.result
-    ; load =
-        decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load
-        &&: ~:(access_unaligned_x)
-        &&: ~:(bubble.m)
-    ; store =
-        decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store
-        &&: ~:(access_unaligned_x)
-        &&: ~:(bubble.m)
+    ; load = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.load &&: ~:(bubble.m)
+    ; store = decoded.x.opcode ==: Riscv_isa.Of_signal.Op.store &&: ~:(bubble.m)
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
     ; store_data
@@ -368,6 +360,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
             Types.Clocking.reg i.clocking ~enable:pc_update.valid pc_update.value
         ; l1i_valid = i.from_l1i.valid
         ; exception_triggers
+        ; pc_to_fetch
         }
     }
 ;;
