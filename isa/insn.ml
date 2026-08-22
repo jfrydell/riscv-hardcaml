@@ -139,6 +139,7 @@ type insn =
   | Ebreak
   | Mret
   | Sret
+  | Fencei
 [@@deriving equal, sexp, quickcheck]
 
 (* Nop = addi $0, $0, 0 *)
@@ -156,6 +157,7 @@ module Binary = struct
     let jalr = Int32.of_string "0b1100111"
     let lui = Int32.of_string "0b0110111"
     let auiPc = Int32.of_string "0b0010111"
+    let fence = Int32.of_string "0b0001111"
     let env = Int32.of_string "0b1110011"
   end
 
@@ -271,6 +273,11 @@ let of_int32 insn =
     then Ok (Lui { rd; imm = immu })
     else if opcode = Int32.to_int_exn Binary.Op.auiPc
     then Ok (AuiPc { rd; imm = immu })
+    else if opcode = Int32.to_int_exn Binary.Op.fence
+    then
+      if Int32.equal insn (Int32.of_string "0x0000100f")
+      then Ok Fencei
+      else Or_error.error_s [%message "illegal instruction: fence" (insn : Int32.t)]
     else if opcode = Int32.to_int_exn Binary.Op.env
     then (
       let csr = bits insn 31 20 in
@@ -411,6 +418,7 @@ let to_int32 =
   | Ebreak -> Int32.of_string "0x00100073"
   | Mret -> Int32.of_string "0x30200073"
   | Sret -> Int32.of_string "0x10200073"
+  | Fencei -> Int32.of_string "0x0000100f"
 ;;
 
 (* Test bits *)
@@ -459,7 +467,7 @@ let%test "roundtrip csrrwi" =
 ;;
 
 let%test "roundtrip system instructions" =
-  List.for_all [ Ecall; Ebreak; Mret; Sret ] ~f:roundtrip
+  List.for_all [ Ecall; Ebreak; Mret; Sret; Fencei ] ~f:roundtrip
 ;;
 
 (* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_exn 31})

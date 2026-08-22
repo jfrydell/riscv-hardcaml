@@ -105,6 +105,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw.Pipeline.Pipelined_word.Of_signal pc =
     Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:F pc_reg
   in
+  let%hw trigger_icache_flush = wire 1 in
   (* To handle propagated stalls correctly, we can't let F take in a new PC
      while it is stalling (technically mux condition could just be propagated
      stalls, but should simplify and this is better for maintainability). One might
@@ -115,7 +116,9 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
      to go to D). *)
   (* TODO: probably should stop fetching while a trap is active. fine to keep doing it, as we will throw away those instructions at D. *)
   let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
-    { pc = { value = mux2 stall.f pc_reg pc_to_fetch; valid = vdd } }
+    { pc = { value = mux2 stall.f pc_reg pc_to_fetch; valid = vdd }
+    ; trigger_flush = trigger_icache_flush
+    }
   in
   stall_trigger.f <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
   let%hw.Pipeline.Pipelined_word.Of_signal insn =
@@ -146,7 +149,9 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     Pipelined_decoded.forward
       ~pipe_info
       ~from_stage:D
-      (Decode.hierarchical ~scope { insn = insn.d; privilege = csrs.privilege; mstatus = csrs.mstatus })
+      (Decode.hierarchical
+         ~scope
+         { insn = insn.d; privilege = csrs.privilege; mstatus = csrs.mstatus })
   in
   (* Register file *)
   let%hw reg_write = wire 32 in
@@ -167,15 +172,10 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   (* Execute stage *)
   (* First operand is rs1 (bypassed) usually, but PC for branch, jal, and auipc (lui takes rs1=0 for imm pass-through) *)
   let%hw src1x =
-    mux2
-      (decoded.x.is_branch |: decoded.x.is_jal |: decoded.x.is_auipc)
-      pc.x
-      rs1val.x
+    mux2 (decoded.x.is_branch |: decoded.x.is_jal |: decoded.x.is_auipc) pc.x rs1val.x
   in
   (* Second is rs2 for R-type, imm otherwise (including branch, where rs2 is used for comparison while ALU calculates PC) *)
-  let%hw src2x =
-    mux2 decoded.x.is_int_r rs2val.x decoded.x.imm
-  in
+  let%hw src2x = mux2 decoded.x.is_int_r rs2val.x decoded.x.imm in
   (* ALU *)
   let%hw.Alu.O.Of_signal alu_result =
     Alu.hierarchical ~scope { src1 = src1x; src2 = src2x; optype = decoded.x.optype }
@@ -204,10 +204,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   branch_execute
   <-- reduce
         ~f:( |: )
-        [ decoded.x.is_branch &: branch_cond
-        ; decoded.x.is_jal
-        ; decoded.x.is_jalr
-        ];
+        [ decoded.x.is_branch &: branch_cond; decoded.x.is_jal; decoded.x.is_jalr ];
   (* Address to branch to is computed by ALU (PC+imm for branch, jal; rs1+imm for jalr) *)
   branch_pc <-- alu_result.result;
   let%hw.Pipeline.Pipelined_word.Of_signal next_pc =
@@ -249,6 +246,9 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     |> Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:M
   in
   rdval.w <-- rdval_from_memory.w;
+  (* Invalidate I-cache once fencei reaches M (will also trigger trap logic for pipeline flush).
+     TODO: should also ensure any writes are propagated (though slow I-cache inv will probably help make that not a problem in practice?) *)
+  trigger_icache_flush <-- decoded.m.is_fencei;
   (* Writeback stage *)
   reg_write <-- rdval.w;
   reg_dest <-- decoded.w.rd;

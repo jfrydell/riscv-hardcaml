@@ -46,6 +46,7 @@ module O = struct
   type 'a t =
     { exception_request : 'a Exception_request.t
     ; explicit_csr : 'a Explicit_csr.Decode.I.t
+    ; noop_flush : 'a
     ; mret : 'a
     ; sret : 'a
     }
@@ -119,6 +120,7 @@ let create
        ; mideleg = csrs.mideleg
        ; valid = decoded.is_csr &&: ~:(exception_request.valid)
        }
+   ; noop_flush = decoded.is_fencei &&: ~:(exception_request.valid)
    ; mret = decoded.is_mret &&: ~:(exception_request.valid)
    ; sret = decoded.is_sret &&: ~:(exception_request.valid)
    }

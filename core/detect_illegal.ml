@@ -56,6 +56,7 @@ let create scope ({ decoded; privilege; mstatus } : _ I.t) =
     ||: decoded.is_jal
     ||: decoded.is_lui
     ||: decoded.is_auipc
+    ||: decoded.is_fencei
     ||: (decoded.is_system &&: legal_system)
     ||: decoded.is_csr
   in

@@ -52,6 +52,7 @@ type 'a t =
   ; is_jal : 'a
   ; is_lui : 'a
   ; is_auipc : 'a
+  ; is_fencei : 'a
   ; is_env : 'a
   ; is_system : 'a
   ; rs1 : 'a Regid.t

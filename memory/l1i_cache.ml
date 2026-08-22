@@ -29,7 +29,11 @@ let insn_from_word ~word ~word_offset =
 ;;
 
 module From_pipe = struct
-  type 'a t = { pc : 'a With_valid.t [@bits addr_width] } [@@deriving hardcaml]
+  type 'a t =
+    { pc : 'a With_valid.t [@bits addr_width]
+    ; trigger_flush : 'a
+    }
+  [@@deriving hardcaml]
 end
 
 module To_pipe = struct
@@ -76,13 +80,38 @@ let create
   scope
   ({ clocking; mmu_state; from_pipeline; cache_from_mem; walker_from_mem } : _ I.t)
   =
-  (* Stall = waiting for translation or fill, miss = translation done but waiting for fill. *)
-  let%hw stall = wire 1 in
-  let%hw miss = wire 1 in
+  (* Busy = fetch in progress, waiting for translation or fill. 
+     Flushing = actively flushing cache (active_pc.valid = gnd).
+     Triggering_flush = will start flush once [~:busy]. *)
+  let%hw busy = wire 1 in
+  let%hw flushing = wire 1 in
+  let%hw triggering_flush =
+    Utils.sr ~style:`Mealy clocking ~set:from_pipeline.trigger_flush ~reset:flushing
+  in
+  (* When not busy or flushing, update active PC. If flush trigger, don't fetch. *)
   let%hw.With_valid.Of_signal active_pc = With_valid.Of_signal.wires addr_width in
   let%hw.With_valid.Of_signal next_pc =
-    With_valid.map2 ~f:(mux2 stall) active_pc from_pipeline.pc
+    With_valid.map2
+      ~f:(mux2 (busy ||: flushing))
+      active_pc
+      { from_pipeline.pc with valid = from_pipeline.pc.valid &&: ~:triggering_flush }
   in
+  (* Cache line walk for flushing. *)
+  let%hw flushing_addr =
+    Types.Clocking.reg_fb
+      clocking
+      ~clear_to:(zero bits_set_index)
+      ~enable:flushing
+      ~width:bits_set_index
+      ~f:(fun addr -> addr +:. 1)
+  in
+  flushing
+  <-- Utils.sr
+        ~set:(triggering_flush &&: ~:busy)
+        ~reset:(all_bits_set flushing_addr)
+        clocking;
+  (* Miss = translation done but waiting for fill. *)
+  let%hw miss = wire 1 in
   let%hw.Mmu.Translate.O.Of_signal translation =
     Mmu.Translate.hierarchical
       ~scope
@@ -107,9 +136,10 @@ let create
         ~size:num_sets
         ~write_ports:
           [| { write_clock = clocking.clock
-             ; write_enable = update_tag
-             ; write_address = extract_set_index active_pa
-             ; write_data = Metadata.Of_signal.pack { tag = active_tag; valid = vdd }
+             ; write_enable = flushing ||: update_tag
+             ; write_address = mux2 flushing flushing_addr (extract_set_index active_pa)
+             ; write_data =
+                 Metadata.Of_signal.pack { tag = active_tag; valid = ~:flushing }
              }
           |]
         ~read_ports:
@@ -129,7 +159,7 @@ let create
     &&: read_metadata.valid
     &&: (active_tag ==: read_metadata.tag)
   in
-  stall <-- (active_pc.valid &&: ~:(tag_match ||: fault));
+  busy <-- (active_pc.valid &&: ~:(tag_match ||: fault));
   miss <-- (active_pc.valid &&: translation.result.valid &&: ~:tag_match);
   let data_mem =
     Ram.create
@@ -164,7 +194,12 @@ let create
        ; size = zero 2
        ; last = gnd
        }
-   ; to_pipeline = { insn = insn_value; pc = active_pc.value; valid = tag_match; fault }
+   ; to_pipeline =
+       { insn = insn_value
+       ; pc = active_pc.value
+       ; valid = tag_match &&: ~:(busy ||: flushing ||: triggering_flush)
+       ; fault
+       }
    ; walker_to_mem = translation.walker_to_mem
    }
    : _ O.t)

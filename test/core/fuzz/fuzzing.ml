@@ -11,7 +11,7 @@ let insn_generator ~reg_max =
   Quickcheck.Generator.filter_map Insn.quickcheck_generator_insn ~f:(fun insn ->
     let open Insn in
     match insn with
-    | Ecall | Ebreak | Mret | Sret | Csr _ -> None
+    | Ecall | Ebreak | Mret | Sret | Fencei | Csr _ -> None
     | _ ->
       let regs_valid =
         match insn with
@@ -21,7 +21,7 @@ let insn_generator ~reg_max =
         | Store (_, { rs1; rs2; _ }) | Branch (_, { rs1; rs2; _ }) ->
           reg_ok rs1 && reg_ok rs2
         | Jal { rd; _ } | Lui { rd; _ } | AuiPc { rd; _ } -> reg_ok rd
-        | Ecall | Ebreak | Mret | Sret | Csr _ -> false
+        | Ecall | Ebreak | Mret | Sret | Fencei | Csr _ -> false
       in
       if not regs_valid
       then None

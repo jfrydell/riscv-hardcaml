@@ -13,8 +13,8 @@
   (pps ppx_jane)))
 
 (tests
- (names basic)
- (modules basic)
+ (names basic fencei)
+ (modules basic fencei)
  (libraries
   core
   hardcaml

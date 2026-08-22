@@ -115,7 +115,8 @@ let step ({ regs; pc; memory; address_translation; _ } as state) =
    | Ecall -> next_pc := Priv.execute_ecall state
    | Ebreak -> next_pc := Priv.execute_ebreak state
    | Mret -> next_pc := Priv.execute_mret state
-   | Sret -> next_pc := Priv.execute_sret state);
+   | Sret -> next_pc := Priv.execute_sret state
+   | Fencei -> ());
   regs.(0) <- Int32.zero;
   pc := !next_pc
 ;;

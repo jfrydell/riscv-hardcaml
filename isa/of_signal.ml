@@ -22,6 +22,7 @@ module Op = struct
   let jalr = of_bit_string "1100111"
   let lui = of_bit_string "0110111"
   let auiPc = of_bit_string "0010111"
+  let fence = of_bit_string "0001111"
   let env = of_bit_string "1110011"
 end
 
@@ -31,6 +32,7 @@ module System_insn = struct
   let ebreak = of_hex ~width:32 "00100073"
   let mret = of_hex ~width:32 "30200073"
   let sret = of_hex ~width:32 "10200073"
+  let fencei = of_hex ~width:32 "0000100f"
 end
 
 (** Values of funct3 for branches and ALU operations. *)

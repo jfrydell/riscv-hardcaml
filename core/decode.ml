@@ -85,6 +85,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
   let%hw is_jal = opcode ==: Riscv_isa.Of_signal.Op.jal in
   let%hw is_lui = opcode ==: Riscv_isa.Of_signal.Op.lui in
   let%hw is_auipc = opcode ==: Riscv_isa.Of_signal.Op.auiPc in
+  let%hw is_fencei = insn ==: Riscv_isa.Of_signal.System_insn.fencei in
   let%hw is_system = is_env &&: ~:(is_csr) in
   let funct7 = insn.:[31, 25] in
   (* Construct result *)
@@ -99,6 +100,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
      ; is_jal
      ; is_lui
      ; is_auipc
+     ; is_fencei
      ; is_env
      ; is_system
      ; rs1 = mux2 regmask.:(2) rs1 (zero 5)

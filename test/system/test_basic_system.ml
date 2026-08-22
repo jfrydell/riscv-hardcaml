@@ -53,6 +53,7 @@ let program =
     ; IntImm (Add, { rd = 2; rs1 = 2; imm = Int32.of_string "0x678" })
     ; Store (Word, { rs1 = 1; rs2 = 2; imm = Int32.zero })
     ; Load (Word, Signed, { rd = 3; rs1 = 1; imm = Int32.zero })
+    ; Fencei
     ; Lui { rd = 2; imm = Int32.of_string "0xdeadc000" }
     ; IntImm (Add, { rd = 2; rs1 = 2; imm = Int32.of_string "-0x111" })
     ; Store (Word, { rs1 = 1; rs2 = 2; imm = Int32.zero })

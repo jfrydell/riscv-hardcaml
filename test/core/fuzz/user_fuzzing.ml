@@ -266,11 +266,11 @@ let generate_program ~seed ~insn_count ~exception_rate =
   let exception_insn kind =
     match kind with
     | Load_page_fault ->
-      Insn.Load (Word, Unsigned, { rd = random_reg (); rs1 = 31; imm = Int32.zero })
+      Insn.Load (Word, Signed, { rd = random_reg (); rs1 = 31; imm = Int32.zero })
     | Store_page_fault ->
       Insn.Store (Word, { rs1 = 31; rs2 = random_reg (); imm = Int32.zero })
     | Unaligned_load ->
-      Insn.Load (Word, Unsigned, { rd = random_reg (); rs1 = 0; imm = Int32.of_int_exn 2 })
+      Insn.Load (Word, Signed, { rd = random_reg (); rs1 = 0; imm = Int32.of_int_exn 2 })
     | Unaligned_store ->
       Insn.Store (Word, { rs1 = 0; rs2 = random_reg (); imm = Int32.of_int_exn 2 })
     | Unaligned_branch -> Insn.Branch (Eq, { rs1 = 0; rs2 = 0; imm = Int32.of_int_exn 2 })

@@ -17,6 +17,7 @@ module Action = struct
   type 'a t =
     { exception_ : 'a
     ; explicit_csr : 'a
+    ; noop_flush : 'a
     ; mret : 'a
     ; sret : 'a
     ; interrupt : 'a
@@ -28,12 +29,16 @@ module Action = struct
   let prioritize possible =
     let exception_ = possible.exception_ in
     let explicit_csr = possible.explicit_csr &&: ~:exception_ in
-    let mret = possible.mret &&: ~:(exception_ ||: explicit_csr) in
-    let sret = possible.sret &&: ~:(exception_ ||: explicit_csr ||: mret) in
-    let interrupt =
-      possible.interrupt &&: ~:(exception_ ||: explicit_csr ||: mret ||: sret)
+    let noop_flush = possible.noop_flush &&: ~:(exception_ ||: explicit_csr) in
+    let mret = possible.mret &&: ~:(exception_ ||: explicit_csr ||: noop_flush) in
+    let sret =
+      possible.sret &&: ~:(exception_ ||: explicit_csr ||: noop_flush ||: mret)
     in
-    { exception_; explicit_csr; mret; sret; interrupt }
+    let interrupt =
+      possible.interrupt
+      &&: ~:(exception_ ||: explicit_csr ||: noop_flush ||: mret ||: sret)
+    in
+    { exception_; explicit_csr; noop_flush; mret; sret; interrupt }
   ;;
 
   let any t = reduce ~f:( |: ) (to_list t)
@@ -90,6 +95,7 @@ let create
     Action.prioritize
       { exception_ = detected.exception_request.valid
       ; explicit_csr = detected.explicit_csr.valid
+      ; noop_flush = detected.noop_flush
       ; mret = detected.mret
       ; sret = detected.sret
       ; interrupt = interrupt_request.valid &&: interrupt_enabled
@@ -128,7 +134,10 @@ let create
     Types.Clocking.cut_through_reg
       clocking
       ~enable:action_start
-      (mux2 start.explicit_csr next_pc_latched decoded_trap.handler_pc)
+      (mux2
+         (start.explicit_csr ||: start.noop_flush)
+         next_pc_latched
+         decoded_trap.handler_pc)
   in
   (* TODO: figure out interrupt pending interface *)
   let%hw mip =
@@ -145,12 +154,13 @@ let create
       }
   in
   Csrs.Of_signal.assign csrs csr_bank.csrs;
+  let%hw action_done = csr_bank.write_done ||: start.noop_flush in
   (* The trap is finished once the CSR update goes through (meaning updated
      values are visible).  *)
-  trap_started <-- Utils.sr ~set:action_start ~reset:csr_bank.write_done clocking;
+  trap_started <-- Utils.sr ~set:action_start ~reset:action_done clocking;
   ({ trap_active = action_start ||: trap_started
    ; squash_M
-   ; handler_pc = { value = redirect_pc; valid = csr_bank.write_done }
+   ; handler_pc = { value = redirect_pc; valid = action_done }
    ; csrs
    }
    : _ O.t)
