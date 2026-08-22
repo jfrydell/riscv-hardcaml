@@ -31,6 +31,7 @@ module I = struct
   type 'a t =
     { clocking : 'a Types.Clocking.t
     ; state : 'a State.t
+    ; trigger_flush : 'a
     ; va : 'a With_valid.t [@bits addr_width]
     (** Request a new address to be translated. Once a request is received, this valid bit
         is ignored until [pa.valid] goes high (but a request arriving the cycle [pa.valid]
@@ -90,7 +91,7 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
    : _ Iface.Translation.t)
 ;;
 
-let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t) =
+let create scope ({ clocking; va; state; trigger_flush; access_type; walker_from_mem } : _ I.t) =
   (* Track whether the currently-arriving VA should be translated; held through
      transaction if it takes more than a cycle. (Note that the rest of [state]
      is registered within the TLB module). *)
@@ -101,6 +102,7 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
       { clocking
       ; va = { va with valid = va.valid &&: ~:translating }
       ; state
+      ; trigger_flush
       ; access_type
       ; walker_from_mem
       }
@@ -114,6 +116,7 @@ let create scope ({ clocking; va; state; access_type; walker_from_mem } : _ I.t)
       ~scope
       { clocking
       ; state
+      ; trigger_flush
       ; va = { va with valid = va.valid &&: translating }
       ; from_walker = tlb_from_walker
       ; required_permission =

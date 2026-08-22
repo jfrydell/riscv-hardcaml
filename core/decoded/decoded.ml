@@ -53,6 +53,7 @@ type 'a t =
   ; is_lui : 'a
   ; is_auipc : 'a
   ; is_fencei : 'a
+  ; is_sfence_vma : 'a
   ; is_env : 'a
   ; is_system : 'a
   ; rs1 : 'a Regid.t

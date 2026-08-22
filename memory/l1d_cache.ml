@@ -76,6 +76,7 @@ module From_pipe = struct
     ; size : 'a [@bits 2] (* 00 = byte, 01 = half, 10 = word *)
     ; sign_extend : 'a (** Whether to sign-extend load data. *)
     ; store_data : 'a [@bits 32]
+    ; trigger_tlb_flush : 'a
     }
   [@@deriving hardcaml]
 end
@@ -150,6 +151,7 @@ let create
       ~scope
       { clocking
       ; state = mmu_state
+      ; trigger_flush = from_pipeline.trigger_tlb_flush
       ; va =
           { valid =
               from_pipeline.load

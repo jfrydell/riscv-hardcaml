@@ -106,6 +106,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     Pipeline.Pipelined_word.forward ~pipe_info ~from_stage:F pc_reg
   in
   let%hw trigger_icache_flush = wire 1 in
+  let%hw trigger_tlb_flush = wire 1 in
   (* To handle propagated stalls correctly, we can't let F take in a new PC
      while it is stalling (technically mux condition could just be propagated
      stalls, but should simplify and this is better for maintainability). One might
@@ -118,6 +119,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   let%hw.Memory.L1i_cache.From_pipe.Of_signal to_l1i =
     { pc = { value = mux2 stall.f pc_reg pc_to_fetch; valid = vdd }
     ; trigger_flush = trigger_icache_flush
+    ; trigger_tlb_flush
     }
   in
   stall_trigger.f <-- ~:(i.from_l1i.valid ||: i.from_l1i.fault);
@@ -226,6 +228,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
     ; size = decoded.x.funct3.:[1, 0]
     ; sign_extend = ~:(decoded.x.funct3.:(2))
     ; store_data
+    ; trigger_tlb_flush
     }
   in
   stall_trigger.m <-- i.from_l1d.stall;
@@ -249,6 +252,7 @@ let create ?(initial_pc = 0) scope (i : _ I.t) =
   (* Invalidate I-cache once fencei reaches M (will also trigger trap logic for pipeline flush).
      TODO: should also ensure any writes are propagated (though slow I-cache inv will probably help make that not a problem in practice?) *)
   trigger_icache_flush <-- decoded.m.is_fencei;
+  trigger_tlb_flush <-- decoded.m.is_sfence_vma;
   (* Writeback stage *)
   reg_write <-- rdval.w;
   reg_dest <-- decoded.w.rd;

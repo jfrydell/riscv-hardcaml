@@ -88,6 +88,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
   let%hw is_fencei = insn ==: Riscv_isa.Of_signal.System_insn.fencei in
   let%hw is_system = is_env &&: ~:(is_csr) in
   let funct7 = insn.:[31, 25] in
+  let%hw is_sfence_vma = is_system &&: (funct7 ==:. 0x09) &&: (rd ==:. 0) in
   (* Construct result *)
   let decoded =
     ({ opcode
@@ -101,6 +102,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
      ; is_lui
      ; is_auipc
      ; is_fencei
+     ; is_sfence_vma
      ; is_env
      ; is_system
      ; rs1 = mux2 regmask.:(2) rs1 (zero 5)

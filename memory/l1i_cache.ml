@@ -32,6 +32,7 @@ module From_pipe = struct
   type 'a t =
     { pc : 'a With_valid.t [@bits addr_width]
     ; trigger_flush : 'a
+    ; trigger_tlb_flush : 'a
     }
   [@@deriving hardcaml]
 end
@@ -117,6 +118,7 @@ let create
       ~scope
       { clocking
       ; state = mmu_state
+      ; trigger_flush = from_pipeline.trigger_tlb_flush
       ; va = { valid = next_pc.valid &&: ~:miss; value = next_pc.value }
       ; access_type =
           Mmu.Translate.Access_type.Of_signal.of_enum

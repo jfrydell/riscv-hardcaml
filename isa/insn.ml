@@ -68,6 +68,13 @@ type regs20 =
   }
 [@@deriving equal, sexp, quickcheck]
 
+(* Registers (2 in 0 out) for SFENCE.VMA. *)
+type regs02 =
+  { rs1 : reg
+  ; rs2 : reg
+  }
+[@@deriving equal, sexp, quickcheck]
+
 (* Registers (0 in 1 out) and immediate for U-type or J-type instructions *)
 type regs01 =
   { rd : reg
@@ -140,6 +147,7 @@ type insn =
   | Mret
   | Sret
   | Fencei
+  | SfenceVma of regs02
 [@@deriving equal, sexp, quickcheck]
 
 (* Nop = addi $0, $0, 0 *)
@@ -286,6 +294,7 @@ let of_int32 insn =
       | 0 when Int32.equal insn (Int32.of_string "0x00100073") -> Ok Ebreak
       | 0 when Int32.equal insn (Int32.of_string "0x30200073") -> Ok Mret
       | 0 when Int32.equal insn (Int32.of_string "0x10200073") -> Ok Sret
+      | 0 when funct7 = 0x09 && rd = 0 -> Ok (SfenceVma { rs1; rs2 })
       | 1 -> Ok (Csr { op = Csrrw; rd; src = Reg rs1; csr })
       | 2 -> Ok (Csr { op = Csrrs; rd; src = Reg rs1; csr })
       | 3 -> Ok (Csr { op = Csrrc; rd; src = Reg rs1; csr })
@@ -308,6 +317,7 @@ let move_bits value max_ min_ loc =
 
 (* Convert `insn` to binary *)
 let to_int32 =
+  let env = Binary.Op.env in
   let regsr { rd; rs1; rs2 } =
     Int32.((of_int_exn rd lsl 7) + (of_int_exn rs1 lsl 15) + (of_int_exn rs2 lsl 20))
   in
@@ -320,6 +330,9 @@ let to_int32 =
       + (of_int_exn rs1 lsl 15)
       + (of_int_exn rs2 lsl 20)
       + move_bits imm 11 5 25)
+  in
+  let regs02 { rs1; rs2 } =
+    Int32.((of_int_exn rs1 lsl 15) + (of_int_exn rs2 lsl 20))
   in
   let regsb { rs1; rs2; imm } =
     Int32.(
@@ -407,18 +420,18 @@ let to_int32 =
   | Lui r -> Int32.( + ) (regsu r) Binary.Op.lui
   | AuiPc r -> Int32.( + ) (regsu r) Binary.Op.auiPc
   | Csr { op; rd; src; csr } ->
-    Stdlib.Int32.add
-      Int32.(
-        (of_int_exn csr lsl 20)
-        + (csr_src_value src lsl 15)
-        + (of_int_exn rd lsl 7)
-        + (of_int_exn (csrop op src) lsl 12))
-      Binary.Op.env
+    Int32.(
+      (of_int_exn csr lsl 20)
+      + (csr_src_value src lsl 15)
+      + (of_int_exn rd lsl 7)
+      + (of_int_exn (csrop op src) lsl 12)
+      + env)
   | Ecall -> Int32.of_string "0x00000073"
   | Ebreak -> Int32.of_string "0x00100073"
   | Mret -> Int32.of_string "0x30200073"
   | Sret -> Int32.of_string "0x10200073"
   | Fencei -> Int32.of_string "0x0000100f"
+  | SfenceVma r -> Int32.(regs02 r + (of_int_exn 0x09 lsl 25) + env)
 ;;
 
 (* Test bits *)
@@ -467,7 +480,9 @@ let%test "roundtrip csrrwi" =
 ;;
 
 let%test "roundtrip system instructions" =
-  List.for_all [ Ecall; Ebreak; Mret; Sret; Fencei ] ~f:roundtrip
+  List.for_all
+    [ Ecall; Ebreak; Mret; Sret; Fencei; SfenceVma { rs1 = 0; rs2 = 0 } ]
+    ~f:roundtrip
 ;;
 
 (* let failing_insn = IntImm (Sra, {rd = 5; rs1 = 5; imm = Int32.of_int_exn 31})

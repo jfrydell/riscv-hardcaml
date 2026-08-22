@@ -43,7 +43,11 @@ let create scope ({ decoded; privilege; mstatus } : _ I.t) =
   let%hw legal_store = funct3 <=:. 2 in
   let%hw legal_branch = funct3 <=:. 1 ||: (funct3 >=:. 4) in
   let%hw legal_system =
-    decoded.is_ecall ||: decoded.is_ebreak ||: decoded.is_mret ||: decoded.is_sret
+    decoded.is_ecall
+    ||: decoded.is_ebreak
+    ||: decoded.is_mret
+    ||: decoded.is_sret
+    ||: decoded.is_sfence_vma
   in
   let%hw legal_opcode =
     decoded.is_int_r

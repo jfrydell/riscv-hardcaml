@@ -20,6 +20,7 @@ module I = struct
     ; state : 'a State.t
     ; va : 'a With_valid.t [@bits Iface.addr_width]
     ; from_walker : 'a Iface.Tlb_response.t
+    ; trigger_flush : 'a
     ; required_permission : 'a Iface.Permission.t
     (** Bits of permission which must be set to avoid a fault; latched with [va]. *)
     ; require_superuser : 'a
@@ -52,17 +53,45 @@ let create scope (i : _ I.t) =
   let%hw accept = ~:busy &&: i.va.valid in
   let%hw.I.Of_signal active = I.map ~f:(Types.Clocking.reg i.clocking ~enable:accept) i in
   let%hw active_vpn = vpn_of_va active.va.value in
-  let%hw fill = i.from_walker.valid in
-  let%hw.Tlb_entry.Of_signal loaded_entry =
+  (* Flush one entry per cycle. The extra read port lets us preserve the global
+     bit while invalidating all non-global entries. *)
+  let%hw flushing = wire 1 in
+  let%hw flush_write_valid = Types.Clocking.reg i.clocking flushing in
+  let%hw flush_write_enable = flushing &&: flush_write_valid in
+  let%hw flushing_addr =
+    Types.Clocking.reg_fb
+      i.clocking
+      ~clear_to:(zero bits_index)
+      ~enable:(flushing ||: i.trigger_flush)
+      ~width:bits_index
+      ~f:(fun addr -> mux2 i.trigger_flush (zero bits_index) (addr +:. 1))
+  in
+  let%hw flush_write_address = flushing_addr -:. 1 in
+  let%hw flush_done = flush_write_enable &&: all_bits_set flush_write_address in
+  flushing
+  <-- Utils.sr ~set:i.trigger_flush ~reset:flush_done i.clocking;
+  let%hw.Tlb_entry.Of_signal flushing_entry = Tlb_entry.Of_signal.wires () in
+  let loaded_entry_from_mem =
     let mem =
       Ram.create
         ~collision_mode:Write_before_read
         ~size:num_entries
         ~write_ports:
           [| { write_clock = i.clocking.clock
-             ; write_enable = fill
-             ; write_address = index_of_vpn i.from_walker.entry.vpn
-             ; write_data = Tlb_entry.Of_signal.pack i.from_walker.entry
+             ; write_enable = flush_write_enable ||: (i.from_walker.valid &&: ~:flushing)
+             ; write_address =
+                 mux2
+                   flush_write_enable
+                   flush_write_address
+                   (index_of_vpn i.from_walker.entry.vpn)
+             ; write_data =
+                 Tlb_entry.Of_signal.pack
+                   (Tlb_entry.Of_signal.mux2
+                      flush_write_enable
+                      { flushing_entry with
+                        entry_valid = flushing_entry.entry_valid &&: flushing_entry.global
+                      }
+                      i.from_walker.entry)
              }
           |]
         ~read_ports:
@@ -70,11 +99,21 @@ let create scope (i : _ I.t) =
              ; read_enable = accept
              ; read_address = index_of_vpn (vpn_of_va i.va.value)
              }
+           ; { read_clock = i.clocking.clock
+             ; read_enable = flushing
+             ; read_address = flushing_addr
+             }
           |]
         ~name:"tlb_entries"
         ()
     in
+    Tlb_entry.Of_signal.assign flushing_entry (Tlb_entry.Of_signal.unpack mem.(1));
     Tlb_entry.Of_signal.unpack mem.(0)
+  in
+  let%hw.Tlb_entry.Of_signal loaded_entry =
+    { loaded_entry_from_mem with
+      entry_valid = loaded_entry_from_mem.entry_valid &&: ~:flushing
+    }
   in
   let%hw vpn_match = loaded_entry.vpn ==: active_vpn in
   let%hw asid_match = loaded_entry.asid ==: active.state.asid in
@@ -102,7 +141,7 @@ let create scope (i : _ I.t) =
   let hold_after_hit = Types.Clocking.cut_through_reg i.clocking ~enable:hit in
   ({ result =
        { pa = hold_after_hit result_pa
-       ; io = result_pa.:(Iface.addr_width - 1)
+       ; io = hold_after_hit result_pa.:(Iface.addr_width - 1)
        ; valid = hold_after_hit ~:result_fault
        ; fault = hold_after_hit result_fault
        ; stall = busy
