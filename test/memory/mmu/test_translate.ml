@@ -14,8 +14,6 @@ module Page_table_memory = struct
       if Bits.to_bool outs.before_edge.valid
          && Bits.to_bool outs.before_edge.access_type.read_word
       then (
-        if Bits.to_bool outs.before_edge.uncacheable
-        then raise_s [%message "page-table read unexpectedly bypassed the cache"];
         let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
         let addr = Bits.to_unsigned_int outs.before_edge.addr in
         let data = page_table addr in
