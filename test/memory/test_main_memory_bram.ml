@@ -62,11 +62,25 @@ let%test_unit "write then read through main memory BRAM" =
             ]))
 ;;
 
+let%test_unit "word read through main memory BRAM" =
+  let _, model_mem = with_memories () in
+  run
+    (testbench
+       ~model_mem
+       ~events:
+         (Sequence.of_list
+            [ Emitters.Event.Write_through
+                { addr = 0x104; data = bits_of_hex "00000000deadbeef"; size = 2 }
+            ; Delay 4
+            ; Read_word { addr = 0x104; size = 2 }
+            ]))
+;;
+
 let access_generator ~accesses =
   let access_generator =
     Quickcheck.Generator.weighted_union
       [ 1., Emitters.Event.write_through_generator ~max_set:4 ~io_accesses:false
-      ; 1., Emitters.Event.read_block_generator ~max_set:4
+      ; 1., Emitters.Event.read_generator ~max_set:4 ~io_accesses:false
       ]
   in
   Quickcheck.Generator.list_with_length accesses access_generator

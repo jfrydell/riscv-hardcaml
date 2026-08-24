@@ -77,8 +77,7 @@ let require_same_memory expected actual =
       |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     let actual =
-      Hashtbl.find actual addr
-      |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
+      Hashtbl.find actual addr |> Option.value ~default:(Bits.zero Memory.Bus.data_width)
     in
     if not (Bits.equal expected actual)
     then

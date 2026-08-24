@@ -68,8 +68,7 @@ let create scope (i : _ I.t) =
   in
   let%hw flush_write_address = flushing_addr -:. 1 in
   let%hw flush_done = flush_write_enable &&: all_bits_set flush_write_address in
-  flushing
-  <-- Utils.sr ~set:i.trigger_flush ~reset:flush_done i.clocking;
+  flushing <-- Utils.sr ~set:i.trigger_flush ~reset:flush_done i.clocking;
   let%hw.Tlb_entry.Of_signal flushing_entry = Tlb_entry.Of_signal.wires () in
   let loaded_entry_from_mem =
     let mem =

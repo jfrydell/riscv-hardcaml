@@ -15,12 +15,6 @@
 (tests
  (names basic fencei)
  (modules basic fencei)
- (libraries
-  core
-  hardcaml
-  riscv_isa
-  riscvemulate
-  sim
-  test_definitions)
+ (libraries core hardcaml riscv_isa riscvemulate sim test_definitions)
  (preprocess
   (pps ppx_jane ppx_hardcaml ppx_sexp_conv)))

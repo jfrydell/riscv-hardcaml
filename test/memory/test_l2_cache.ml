@@ -115,9 +115,36 @@ let%test_unit "write then read through l2 cache" =
        ~write_events:
          (Sequence.of_list
             [ Emitters.Event.Write_through
-                { addr = 0x104; data = bits_of_hex "00000000deadbeef"; size = 2 } ])
+                { addr = 0x104; data = bits_of_hex "00000000deadbeef"; size = 2 }
+            ])
        ~read_events:
          (Sequence.of_list [ Emitters.Event.Delay 40; Read_block { addr = 0x104 } ]))
+;;
+
+let%test_unit "cacheable word read observes dirty l2 data" =
+  let mem, model_mem =
+    with_memories
+      ~backing_mem:
+        (Int.Table.of_alist_exn
+           [ 0x100, bits_of_hex "0011223344556677"
+           ; 0x108, bits_of_hex "8899aabbccddeeff"
+           ; 0x110, bits_of_hex "0123456789abcdef"
+           ; 0x118, bits_of_hex "fedcba9876543210"
+           ])
+      ()
+  in
+  run
+    (testbench
+       ~mem
+       ~model_mem
+       ~write_events:
+         (Sequence.of_list
+            [ Emitters.Event.Write_through
+                { addr = 0x104; data = bits_of_hex "00000000deadbeef"; size = 2 }
+            ])
+       ~read_events:
+         (Sequence.of_list
+            [ Emitters.Event.Delay 40; Read_word { addr = 0x104; size = 2 } ]))
 ;;
 
 let access_generator ~writes ~reads =

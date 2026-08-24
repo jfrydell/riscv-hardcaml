@@ -331,9 +331,7 @@ let to_int32 =
       + (of_int_exn rs2 lsl 20)
       + move_bits imm 11 5 25)
   in
-  let regs02 { rs1; rs2 } =
-    Int32.((of_int_exn rs1 lsl 15) + (of_int_exn rs2 lsl 20))
-  in
+  let regs02 { rs1; rs2 } = Int32.((of_int_exn rs1 lsl 15) + (of_int_exn rs2 lsl 20)) in
   let regsb { rs1; rs2; imm } =
     Int32.(
       move_bits imm 11 11 7

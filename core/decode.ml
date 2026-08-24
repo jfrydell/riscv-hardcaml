@@ -32,9 +32,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
   in
   let funct3 = insn.:[14, 12] in
   let%hw is_env = opcode ==: Riscv_isa.Of_signal.Op.env in
-  let%hw is_csr =
-    is_env &&: (drop_top ~width:1 funct3 <>:. 0)
-  in
+  let%hw is_csr = is_env &&: (drop_top ~width:1 funct3 <>:. 0) in
   let%hw is_csr_imm = is_csr &&: msb funct3 in
   (* Extract immediate based on opcode *)
   let%hw imm =
@@ -86,7 +84,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
   let%hw is_lui = opcode ==: Riscv_isa.Of_signal.Op.lui in
   let%hw is_auipc = opcode ==: Riscv_isa.Of_signal.Op.auiPc in
   let%hw is_fencei = insn ==: Riscv_isa.Of_signal.System_insn.fencei in
-  let%hw is_system = is_env &&: ~:(is_csr) in
+  let%hw is_system = is_env &&: ~:is_csr in
   let funct7 = insn.:[31, 25] in
   let%hw is_sfence_vma = is_system &&: (funct7 ==:. 0x09) &&: (rd ==:. 0) in
   (* Construct result *)
@@ -129,7 +127,7 @@ let create scope ({ insn; privilege; mstatus } : _ I.t) =
      ; result_in_m = is_load ||: is_csr
      ; rs2_not_used_until_m = is_store
      }
-      : _ O.t)
+     : _ O.t)
   in
   let%hw.Detect_illegal.O.Of_signal illegal =
     Detect_illegal.hierarchical ~scope { decoded; privilege; mstatus }

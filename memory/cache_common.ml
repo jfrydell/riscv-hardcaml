@@ -10,7 +10,6 @@ module Make (Config : Config) = struct
   let num_sets = Config.num_sets
   let addr_width = Memory_bus.addr_width
   let data_width = Memory_bus.data_width
-
   let block_size_bits = Memory_bus.block_size_bits
   let bits_byte_in_block = address_bits_for (block_size_bits / 8)
   let words_per_block = block_size_bits / data_width
@@ -99,15 +98,15 @@ module Make (Config : Config) = struct
     ;;
   end
 
-  (** Controls reading data from BRAM and streaming it back to L1 for block-granularity
-      reads. TODO: word-granularity reads (take in addr, not base_addr) *)
+  (** Controls the addresses used to read a word or stream a block from BRAM. The caller
+      is responsible for registering the outputs to align them with the BRAM data. *)
   module Read_stream = struct
     module I = struct
       type 'a t =
         { clocking : 'a Types.Clocking.t
-        ; start : 'a (** Start streaming data out from [base_addr]. *)
-        ; base_addr : 'a [@bits addr_width]
-        ; data_in : 'a [@bits data_width]
+        ; start_stream : 'a (** Start streaming the block containing [read_addr]. *)
+        ; read_word : 'a (** Read only the word at [read_addr]. *)
+        ; read_addr : 'a [@bits addr_width]
         }
       [@@deriving hardcaml]
     end
@@ -115,49 +114,43 @@ module Make (Config : Config) = struct
     module O = struct
       type 'a t =
         { read_addr : 'a [@bits addr_width]
-        ; to_l1 : 'a Memory_bus.From_mem.t
+        ; valid : 'a
+        ; last : 'a
         }
       [@@deriving hardcaml]
     end
 
-    let create scope ({ clocking; start; base_addr; data_in } : _ I.t) =
+    let create scope ({ clocking; start_stream; read_word; read_addr } : _ I.t) =
       let%hw base_addr =
-        Types.Clocking.cut_through_reg clocking ~enable:start base_addr
+        block_base_addr
+          (Types.Clocking.cut_through_reg clocking ~enable:start_stream read_addr)
       in
-      (* Increment the word number from when [start] is set through the last word in the
-         block. *)
+      (* Increment the word number from when [start_stream] is set through the last word
+         in the block. *)
       let%hw reading_last = wire 1 in
-      let%hw do_read =
-        Utils.sr ~set:start ~reset:reading_last ~style:`Mealy_set clocking
+      let%hw was_reading = wire 1 in
+      let%hw begin_stream = start_stream &&: ~:was_reading in
+      let%hw do_stream =
+        Utils.sr ~set:begin_stream ~reset:reading_last ~style:`Mealy_set clocking
       in
-      let%hw was_reading = Types.Clocking.reg clocking do_read in
-      let%hw start_stream = start &&: ~:was_reading in
+      let%hw do_read_word = read_word &&: ~:was_reading in
+      let%hw valid = do_stream ||: do_read_word in
+      was_reading <-- Types.Clocking.reg clocking valid;
       let%hw read_word_number_reg =
         Types.Clocking.reg_fb
           clocking
           ~width:bits_word_in_block
-          ~f:(fun w -> mux2 start_stream (zero bits_word_in_block +:. 1) (w +:. 1))
-          ~enable:do_read
+          ~f:(fun w -> mux2 begin_stream (one bits_word_in_block) (w +:. 1))
+          ~enable:do_stream
       in
       let%hw read_word_number =
-        mux2 start_stream (zero bits_word_in_block) read_word_number_reg
+        mux2 begin_stream (zero bits_word_in_block) read_word_number_reg
       in
       reading_last <-- (read_word_number ==: ones bits_word_in_block);
-      let%hw read_addr =
-        base_addr
-        +: (uresize ~width:(addr_width - bits_byte_in_word) read_word_number
-            @: zero bits_byte_in_word)
-      in
-      let%hw valid = Types.Clocking.reg clocking do_read in
-      let%hw last = Types.Clocking.reg clocking reading_last in
-      ({ read_addr
-       ; to_l1 =
-           { valid
-           ; addr = Types.Clocking.reg clocking read_addr
-           ; data = data_in
-           ; last
-           ; ready = last
-           }
+      let%hw stream_read_addr = base_addr +: word_offset_addr read_word_number in
+      ({ read_addr = mux2 do_read_word read_addr stream_read_addr
+       ; valid
+       ; last = do_read_word ||: reading_last
        }
        : _ O.t)
     ;;

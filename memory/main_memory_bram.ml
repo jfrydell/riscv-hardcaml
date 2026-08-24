@@ -37,12 +37,12 @@ module Make (Config : Config) = struct
   let create scope ({ clocking; from_cpu } : _ I.t) =
     let%hw access_done = wire 1 in
     let addr = from_cpu.addr in
-    (* TODO: support read-word and write-back *)
+    (* TODO: support write-back *)
     let incoming_access =
       { Active_access.valid = from_cpu.valid
       ; addr
       ; uncacheable = from_cpu.valid &&: from_cpu.uncacheable
-      ; read_word = gnd
+      ; read_word = from_cpu.valid &&: from_cpu.access_type.read_word
       ; read_block = from_cpu.valid &&: from_cpu.access_type.read_block
       ; write_through = from_cpu.valid &&: from_cpu.access_type.write_through
       ; write_back = gnd
@@ -58,10 +58,13 @@ module Make (Config : Config) = struct
       Read_stream.hierarchical
         ~scope
         { clocking
-        ; start = active_access.read_block &&: ~:access_done
-        ; base_addr = block_base_addr active_access.addr
-        ; data_in = loaded_word
+        ; start_stream = active_access.read_block &&: ~:access_done
+        ; read_word = active_access.read_word &&: ~:access_done
+        ; read_addr = active_access.addr
         }
+    in
+    let%hw.Read_stream.O.Of_signal read_stream_prev =
+      Read_stream.O.map read_stream ~f:(Types.Clocking.reg clocking)
     in
     let%hw.Writing_store.Of_signal writing_store =
       Writing_store.(
@@ -75,7 +78,10 @@ module Make (Config : Config) = struct
       |> concat_lsb
     in
     let%hw data_read_addr =
-      mux2 active_access.read_block read_stream.read_addr active_access.addr
+      mux2
+        (active_access.read_block ||: active_access.read_word)
+        read_stream.read_addr
+        active_access.addr
     in
     let%hw take_incoming = ~:(active_access.valid) ||: access_done in
     let%hw.Active_access.Of_signal next_access =
@@ -87,7 +93,7 @@ module Make (Config : Config) = struct
     access_done
     <-- (active_access.write_through
          ||: active_access.write_back
-         ||: read_stream.to_l1.last);
+         ||: read_stream_prev.last);
     let%hw data_write_enable = writing_store.valid ||: active_access.write_back in
     let%hw data_write_addr =
       mux2 active_access.write_back active_access.addr writing_store.addr
@@ -117,7 +123,12 @@ module Make (Config : Config) = struct
     in
     loaded_word <-- data_mem.(0);
     let%hw.Memory_bus.From_mem.Of_signal to_cpu =
-      { read_stream.to_l1 with ready = take_incoming }
+      { valid = read_stream_prev.valid
+      ; addr = read_stream_prev.read_addr
+      ; data = loaded_word
+      ; last = read_stream_prev.last
+      ; ready = take_incoming
+      }
     in
     ({ to_cpu } : _ O.t)
   ;;

@@ -14,6 +14,8 @@ module Page_table_memory = struct
       if Bits.to_bool outs.before_edge.valid
          && Bits.to_bool outs.before_edge.access_type.read_word
       then (
+        if Bits.to_bool outs.before_edge.uncacheable
+        then raise_s [%message "page-table read unexpectedly bypassed the cache"];
         let%bind.Step () = Step.delay (I.Of_bits.zero ()) ~num_cycles:(delay_cycles ()) in
         let addr = Bits.to_unsigned_int outs.before_edge.addr in
         let data = page_table addr in
@@ -396,7 +398,15 @@ let%test_unit "randomized page-table walks with variable memory latency" =
   let saw_invalid_leaf_encoding = ref false in
   let saw_forbidden_write = ref false in
   let record_coverage
-    { mode; priv; fetch_priv; access_type; vpn; asid = _; page_offset = _; delay_cycles = _ }
+    { mode
+    ; priv
+    ; fetch_priv
+    ; access_type
+    ; vpn
+    ; asid = _
+    ; page_offset = _
+    ; delay_cycles = _
+    }
     =
     let effective_priv =
       match access_type with
@@ -431,7 +441,10 @@ let%test_unit "randomized page-table walks with variable memory latency" =
   let require_permissions name coverage expected =
     let missing = List.filter expected ~f:(Fn.non (Hash_set.mem coverage)) in
     if not (List.is_empty missing)
-    then raise_s [%message "randomized MMU permission coverage incomplete" name (missing : int list)]
+    then
+      raise_s
+        [%message
+          "randomized MMU permission coverage incomplete" name (missing : int list)]
   in
   require_permissions "normal pages" normal_permission_coverage (List.init 16 ~f:Fn.id);
   require_permissions

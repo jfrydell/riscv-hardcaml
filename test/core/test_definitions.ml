@@ -29,18 +29,11 @@ end
 module Fencei = struct
   (* Address 8 initially contains [halt], so it is fetched and cached before the
      store at address 0 changes it.  [fence.i] must invalidate that cached copy. *)
-  let addi =
-    Insn.IntImm (Add, { rd = 3; rs1 = 0; imm = Int32.of_int_exn 42 })
-  ;;
-
+  let addi = Insn.IntImm (Add, { rd = 3; rs1 = 0; imm = Int32.of_int_exn 42 })
   let halt = Insn.Branch (Eq, { rs1 = 0; rs2 = 0; imm = Int32.zero })
 
   let program =
-    [ Insn.Store (Word, { rs1 = 1; rs2 = 2; imm = Int32.zero })
-    ; Insn.Fencei
-    ; halt
-    ; halt
-    ]
+    [ Insn.Store (Word, { rs1 = 1; rs2 = 2; imm = Int32.zero }); Insn.Fencei; halt; halt ]
   ;;
 
   (* The first instruction stores [addi] to address 8. *)

@@ -78,7 +78,7 @@ let create scope ({ clocking; state; from_tlb; read_from_mem } : _ I.t) =
   ({ to_tlb = { entry; valid = finish }
    ; read_to_mem =
        { valid = busy
-       ; uncacheable = vdd
+       ; uncacheable = gnd
        ; access_type = Memory_bus.Access_type.read_word
        ; addr = read_addr
        ; data = zero Memory_bus.data_width

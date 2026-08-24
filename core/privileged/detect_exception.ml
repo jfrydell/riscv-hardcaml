@@ -120,7 +120,8 @@ let create
        ; mideleg = csrs.mideleg
        ; valid = decoded.is_csr &&: ~:(exception_request.valid)
        }
-   ; noop_flush = (decoded.is_fencei ||: decoded.is_sfence_vma) &&: ~:(exception_request.valid)
+   ; noop_flush =
+       decoded.is_fencei ||: decoded.is_sfence_vma &&: ~:(exception_request.valid)
    ; mret = decoded.is_mret &&: ~:(exception_request.valid)
    ; sret = decoded.is_sret &&: ~:(exception_request.valid)
    }

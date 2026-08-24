@@ -91,7 +91,10 @@ let bare scope ({ clocking; va; state; _ } : _ I.t) =
    : _ Iface.Translation.t)
 ;;
 
-let create scope ({ clocking; va; state; trigger_flush; access_type; walker_from_mem } : _ I.t) =
+let create
+  scope
+  ({ clocking; va; state; trigger_flush; access_type; walker_from_mem } : _ I.t)
+  =
   (* Track whether the currently-arriving VA should be translated; held through
      transaction if it takes more than a cycle. (Note that the rest of [state]
      is registered within the TLB module). *)

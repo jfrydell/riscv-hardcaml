@@ -100,17 +100,30 @@ module Event = struct
   let read_generator ~max_set ~io_accesses =
     let open Quickcheck.Generator.Let_syntax in
     Quickcheck.Generator.weighted_union
-      [ ( 3.
-        , let%bind size = Int.gen_incl 0 2 in
+      [ ( 2.
+        , let%map addr = address_generator ~max_set () in
+          Read_block { addr } )
+      ; ( 1.
+        , let size = 2 in
           let%map addr = address_generator ~size ~max_set ~io_accesses () in
-          if is_io_addr addr then Read_word { addr; size } else Read_block { addr } )
+          Read_word { addr; size } )
       ; ( 1.
         , let%map cycles = Int.gen_incl 0 20 in
           Delay cycles )
       ]
   ;;
 
-  let read_block_generator ~max_set = read_generator ~max_set ~io_accesses:false
+  let read_block_generator ~max_set =
+    let open Quickcheck.Generator.Let_syntax in
+    Quickcheck.Generator.weighted_union
+      [ ( 3.
+        , let%map addr = address_generator ~max_set () in
+          Read_block { addr } )
+      ; ( 1.
+        , let%map cycles = Int.gen_incl 0 20 in
+          Delay cycles )
+      ]
+  ;;
 
   let write_through_generator ~max_set ~io_accesses =
     let open Quickcheck.Generator.Let_syntax in
@@ -173,7 +186,7 @@ let request_of_event = function
     }
   | Event.Read_word { addr; size } ->
     { I.valid = Bits.vdd
-    ; uncacheable = Bits.vdd
+    ; uncacheable = Bits.of_bool (is_io_addr addr)
     ; access_type = { (Memory.Bus.Access_type.Of_bits.zero ()) with read_word = Bits.vdd }
     ; addr = Bits.of_unsigned_int ~width:Memory.Bus.addr_width addr
     ; data = Bits.zero Memory.Bus.data_width

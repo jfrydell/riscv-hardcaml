@@ -103,7 +103,9 @@ let test_machine_identity_csrs () =
   let expected = Array.create ~len:32 Int32.zero in
   expected.(1) <- Int32.of_string "0x40140100";
   if not (Array.equal Int32.equal (Sim.Cpu.regs sim) expected)
-  then raise_s [%message "Machine identity CSR result mismatch" (Sim.Cpu.regs sim : int32 array)];
+  then
+    raise_s
+      [%message "Machine identity CSR result mismatch" (Sim.Cpu.regs sim : int32 array)];
   if not (Array.equal Int32.equal (Riscvemulate.State.regs emulator) expected)
   then
     raise_s
